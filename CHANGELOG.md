@@ -23,10 +23,15 @@ All notable changes to sts2-cli are documented here.
 - Power JSON now includes `"id"` field (UPPER_SNAKE_CASE, e.g. `"WEAK_POWER"`) alongside the localized name, enabling language-independent buff/debuff classification
 - Card JSON now includes `"preview_stats"` (effective values after modifiers) and `"per_enemy_damage"` (per-enemy damage when Vulnerable varies) fields
 - Per-enemy damage preview in C# now only runs for `AnyEnemy` target cards, skipping the per-enemy loop for AOE and self-targeting cards
+- Upgrade preview label now bilingual: `Up:` in English, `升:` in Chinese (was showing `升:` in both)
+- Help text combat line now lists `q` (return to combat view) alongside `e` and `p1`
 
 ### Fixed
 - **`DEBUFF_IDS` / `STAT_POWER_IDS` now use correct ID format** — power IDs from C# (`pw.Id.Entry`) are UPPER_SNAKE_CASE (e.g. `WEAK_POWER`), not PascalCase; previous entries never matched, breaking all buff/debuff coloring; `InvinciblePower` replaced with correct `INTANGIBLE_POWER`
-- **Map choices sorted consistently** — `show_map()` now sorts choices by `(col, row)` the same way the main loop does, preventing index mismatch when typing `map` during path selection
+- **Map choices sorted consistently** — `show_map()` and the `map_select` handler both sort by `(col, row)`, preventing label/selection mismatch when two choices share the same column
+- **Per-enemy damage display order** — `sorted(per_enemy.items())` now uses `key=lambda kv: int(kv[0])` to sort numerically; JSON string keys would sort lexicographically and could mis-order entries with 10+ enemies
+- **`ClearPreview()` now guaranteed via `try/finally`** — if `UpdateDynamicVarPreview` throws inside the base or per-enemy preview loop, preview state is now always cleared, preventing stale preview affecting subsequent card computations
+- **`_UNRESOLVED_KEY_RE` uses `re.compile` directly** — removed unnecessary `__import__('re')` indirection since `re` is already imported at the top of the file
 - **Shop `q` no longer crashes** — entering `q` in the shop (advertised as a leave alias) no longer falls through to `int("q")` and raises `ValueError`; handled explicitly before the numeric buy-card path
 - **Neutralize (中和) no longer exhausted after play** — a Harmony patch that fully replaced `Neutralize.OnPlay` was causing the card to end up in the exhaust pile instead of the discard pile after play; narrowed to a null-guard only
 - **`play_full_run.py` no longer crashes if `.dotnet-arm64` path is missing** — dotnet binary discovery now tries multiple paths (same fallback logic as `play.py`)

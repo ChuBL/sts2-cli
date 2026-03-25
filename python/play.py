@@ -160,7 +160,7 @@ LANG = "zh"  # "en", "zh", or "both"
 
 # ─── Display helpers ───
 
-_UNRESOLVED_KEY_RE = __import__('re').compile(r'^[A-Z][A-Z0-9_]*\.(title|name|description|smartDescription)$')
+_UNRESOLVED_KEY_RE = re.compile(r'^[A-Z][A-Z0-9_]*\.(title|name|description|smartDescription)$')
 
 def _clean_loc_key(s):
     """Strip trailing .title/.name etc. from an unresolved loc key and title-case it."""
@@ -572,7 +572,7 @@ def show_combat(state):
                         dmg_str = f"{dmg_label} {c('→', 'yellow')}"
                 else:
                     parts = [f"[{int(ei)+1}]{c(str(dmg), 'green' if dmg > base_dmg else 'red')}"
-                             for ei, dmg in sorted(per_enemy.items())]
+                             for ei, dmg in sorted(per_enemy.items(), key=lambda kv: int(kv[0]))]
                     dmg_str = f"{dmg_label} {c('→', 'yellow')} {' '.join(parts)}"
             elif target == "AnyEnemy":
                 dmg_str = f"{dmg_label} {c('→', 'yellow')}"
@@ -751,7 +751,7 @@ def _print_card_list(cards, show_index=True, show_rarity=False):
             kws = cd.get("keywords") or []
             kw_str = (" " + " ".join(c(f"[{t(k, _KW_ZH.get(k,k))}]", "dim") for k in kws)) if kws else ""
             aug_parts = _format_upgrade_preview(cd.get("stats") or {}, cd.get("after_upgrade"), cd.get("cost"))
-            aug_str = (f"  {c(t('升: ','升: '), 'green')}" + " ".join(aug_parts)) if aug_parts else ""
+            aug_str = (f"  {c(t('Up: ','升: '), 'green')}" + " ".join(aug_parts)) if aug_parts else ""
             rarity_str = ""
             if show_rarity:
                 rarity = cd.get("rarity", "Common")
@@ -1110,7 +1110,7 @@ def _handle_meta(raw, state=None):
 
   {c('操作:', 'bold')}
     地图:    输入路径编号 (1, 2, 3)
-    战斗:    卡牌编号 / {c('e', 'yellow')} 结束回合 / {c('p1', 'yellow')} 使用药水
+    战斗:    卡牌编号 / {c('e', 'yellow')} 结束回合 / {c('p1', 'yellow')} 使用药水 / {c('q', 'yellow')} 返回战斗视图
     奖励:    卡牌编号 / {c('s', 'yellow')} 跳过
     休息:    选项编号
     事件:    选项编号 / {c('leave/q', 'yellow')} 离开
@@ -1128,7 +1128,7 @@ def _handle_meta(raw, state=None):
 
   {c('Actions:', 'bold')}
     Map:     path number (1, 2, 3)
-    Combat:  card index / {c('e', 'yellow')} end turn / {c('p1', 'yellow')} use potion
+    Combat:  card index / {c('e', 'yellow')} end turn / {c('p1', 'yellow')} use potion / {c('q', 'yellow')} back to combat view
     Reward:  card index / {c('s', 'yellow')} skip
     Rest:    option index
     Event:   option index / {c('leave/q', 'yellow')} leave
@@ -1267,7 +1267,7 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0):
                 break
 
             elif dec == "map_select":
-                choices = sorted(state.get("choices", []), key=lambda ch: ch["col"])
+                choices = sorted(state.get("choices", []), key=lambda ch: (ch["col"], ch.get("row", 0)))
                 show_map({**state, "choices": choices}, send_fn=send)
 
                 if auto:

@@ -1409,14 +1409,17 @@ public class RunSimulator
             try
             {
                 // Base preview (no target) — captures Strength, Weak, Frail, Dex, relics, etc.
-                c.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, c.DynamicVars);
-                foreach (var dv in c.DynamicVars.Values)
+                try
                 {
-                    var pv = (int)dv.PreviewValue;
-                    if (pv != (int)dv.BaseValue)
-                        previewStats[dv.Name.ToLowerInvariant()] = pv;
+                    c.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, c.DynamicVars);
+                    foreach (var dv in c.DynamicVars.Values)
+                    {
+                        var pv = (int)dv.PreviewValue;
+                        if (pv != (int)dv.BaseValue)
+                            previewStats[dv.Name.ToLowerInvariant()] = pv;
+                    }
                 }
-                c.DynamicVars.ClearPreview();
+                finally { c.DynamicVars.ClearPreview(); }
 
                 // Per-enemy damage preview (captures Vulnerable on specific enemies)
                 // Only needed for single-target cards — AOE/self cards don't use per_enemy_damage
@@ -1427,11 +1430,14 @@ public class RunSimulator
                     var dmgByEnemy = new Dictionary<int, int>();
                     for (int ei = 0; ei < liveEnemies.Count; ei++)
                     {
-                        c.UpdateDynamicVarPreview(CardPreviewMode.Normal, liveEnemies[ei], c.DynamicVars);
-                        var dmgDv = c.DynamicVars.Values.FirstOrDefault(d =>
-                            string.Equals(d.Name, "damage", StringComparison.OrdinalIgnoreCase));
-                        dmgByEnemy[ei] = dmgDv != null ? (int)dmgDv.PreviewValue : baseDmg;
-                        c.DynamicVars.ClearPreview();
+                        try
+                        {
+                            c.UpdateDynamicVarPreview(CardPreviewMode.Normal, liveEnemies[ei], c.DynamicVars);
+                            var dmgDv = c.DynamicVars.Values.FirstOrDefault(d =>
+                                string.Equals(d.Name, "damage", StringComparison.OrdinalIgnoreCase));
+                            dmgByEnemy[ei] = dmgDv != null ? (int)dmgDv.PreviewValue : baseDmg;
+                        }
+                        finally { c.DynamicVars.ClearPreview(); }
                     }
 
                     // Always send all per-enemy values; Python owns display logic
