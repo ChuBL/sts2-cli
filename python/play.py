@@ -13,6 +13,7 @@ import json
 import re
 import subprocess
 import sys
+import unicodedata
 import os
 import argparse
 import random
@@ -159,11 +160,20 @@ LANG = "zh"  # "en", "zh", or "both"
 
 # ─── Display helpers ───
 
+_UNRESOLVED_KEY_RE = __import__('re').compile(r'^[A-Z][A-Z0-9_]*\.(title|name|description|smartDescription)$')
+
+def _clean_loc_key(s):
+    """Strip trailing .title/.name etc. from an unresolved loc key and title-case it."""
+    if _UNRESOLVED_KEY_RE.match(s):
+        base = s.rsplit(".", 1)[0]  # e.g. "MANGLE_POWER"
+        return base.replace("_", " ").title()
+    return s
+
 def n(obj):
     """Extract display name based on language setting."""
     if isinstance(obj, dict):
         if "en" in obj:
-            en = obj["en"]
+            en = _clean_loc_key(obj["en"])
             zh = obj.get("zh")
             if LANG == "zh" and zh:
                 return zh
@@ -270,6 +280,29 @@ NODE_COLORS = {
     "Ancient": "orange",
 }
 
+# Power IDs that are debuffs (negative status for whoever has them)
+DEBUFF_IDS = {
+    "WeakPower", "VulnerablePower", "FrailPower", "PoisonPower", "BurningPower",
+    "SlowPower", "ChokePower", "ConstrictionPower", "HexPower", "NoDrawPower",
+    "EntangledPower", "DrawReductionPower", "ShacklesPower", "BiasedCognitionPower",
+    "InvinciblePower",  # Intangible — limits all damage to 1
+}
+# Stat powers where a negative amount is a debuff
+STAT_POWER_IDS = {"StrengthPower", "DexterityPower", "FocusPower"}
+
+def _vis_width(s):
+    """Terminal display width: CJK/fullwidth chars count as 2, others as 1."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1 for ch in s)
+
+def _power_is_debuff(pw):
+    """Return True if this power dict represents a debuff (bad for the creature that has it)."""
+    pid = pw.get("id", "")
+    if pid in DEBUFF_IDS:
+        return True
+    if pid in STAT_POWER_IDS:
+        return isinstance(pw.get("amount"), (int, float)) and pw.get("amount", 0) < 0
+    return False
+
 # ─── Game display ───
 
 SPECIAL_VARS = {
@@ -348,22 +381,46 @@ def show_player(p, show_deck=False):
     if show_deck:
         cards = p.get("deck", [])
         if cards:
-            print(f"  {c(t('Deck:','牌组:'), 'bold')}")
-            KW_ZH = {"Exhaust": "消耗", "Innate": "固有", "Ethereal": "虚无", "Retain": "保留", "Sly": "奇巧", "Eternal": "永恒", "Unplayable": "不能被打出"}
+            KW_ZH = {"Exhaust": "消耗", "Innate": "固有", "Ethereal": "虚无", "Retain": "保留",
+                     "Sly": "奇巧", "Eternal": "永恒", "Unplayable": "不能被打出"}
+            TYPE_ORDER = ["Attack", "Skill", "Power", "Status", "Curse"]
+            TYPE_COLOR = {"Attack": "red", "Skill": "blue", "Power": "magenta", "Status": "dim", "Curse": "dim"}
+            # Group cards by type
+            from collections import defaultdict
+            groups: dict = defaultdict(list)
             for cd in cards:
-                up = c("+", "green") if cd.get("upgraded") else ""
-                ctype_zh = CARD_TYPE_ZH.get(cd.get("type",""), cd.get("type",""))
-                kws = cd.get("keywords") or []
-                kw_str = " ".join(c(t(k, KW_ZH.get(k, k)), "dim") for k in kws)
-                kw_str = f" [{kw_str}]" if kw_str else ""
-                cd_d = card_desc(cd)
-                print(f"    {n(cd['name'])}{up} ({cd.get('cost','?')}) {c(t(cd.get('type',''), ctype_zh), 'dim')}{kw_str}")
-                if cd_d:
-                    print(f"      {c(cd_d, 'dim')}")
-                stats = cd.get("stats") or {}
-                aug_parts = _format_upgrade_preview(stats, cd.get("after_upgrade"), cd.get("cost"))
-                if aug_parts:
-                    print(f"      {c(t('upgrade:','升级:'), 'green')} {', '.join(aug_parts)}")
+                groups[cd.get("type", "Status")].append(cd)
+            # Max name width across whole deck for alignment
+            max_nw = max(
+                (_vis_width(n(cd["name"])) + (1 if cd.get("upgraded") else 0) for cd in cards),
+                default=4
+            )
+            total = len(cards)
+            print(f"  {c(t(f'Deck ({total}):',f'牌组 ({total}):'), 'bold')}")
+            for typ in TYPE_ORDER:
+                if typ not in groups:
+                    continue
+                label = t(typ, CARD_TYPE_ZH.get(typ, typ))
+                col = TYPE_COLOR.get(typ, "dim")
+                bar_len = max(0, 44 - _vis_width(label))
+                print(f"  {c(label, col)} {c('─' * bar_len, 'dim')}")
+                for cd in groups[typ]:
+                    name = n(cd["name"])
+                    up_mark = c("+", "green") if cd.get("upgraded") else ""
+                    name_w = _vis_width(name) + (1 if cd.get("upgraded") else 0)
+                    pad = " " * (max_nw - name_w + 1)
+                    cost = cd.get("cost", "?")
+                    # Description: join all lines into one
+                    cd_d = card_desc(cd)
+                    cd_d = " ".join(cd_d.split("\n")) if cd_d else ""
+                    # Keywords inline
+                    kws = cd.get("keywords") or []
+                    kw_str = (" " + " ".join(c(f"[{t(k, KW_ZH.get(k,k))}]", "dim") for k in kws)) if kws else ""
+                    # Upgrade preview inline
+                    stats = cd.get("stats") or {}
+                    aug_parts = _format_upgrade_preview(stats, cd.get("after_upgrade"), cd.get("cost"))
+                    aug_str = (f"  {c(t('升: ','升: '), 'green')}" + " ".join(aug_parts)) if aug_parts else ""
+                    print(f"    {name}{up_mark}{pad}({cost})  {c(cd_d, 'dim')}{kw_str}{aug_str}")
 
 def show_combat(state):
     rnd = state.get("round", 0)
@@ -371,10 +428,36 @@ def show_combat(state):
     max_energy = state.get("max_energy", 0)
     draw = state.get("draw_pile_count", 0)
     discard = state.get("discard_pile_count", 0)
+    exhaust_count = state.get("exhaust_pile_count", 0)
 
     print(f"\n{'─' * 60}")
-    print(f"  {c(t(f'Round {rnd}',f'回合 {rnd}'), 'bold')}  {t('Energy','能量')}{c(f'{energy}/{max_energy}', 'cyan')}  {t('Draw','抽牌')}{draw}  {t('Discard','弃牌')}{discard}")
+    exhaust_str = f"  {t('Exhaust','消耗')}{c(str(exhaust_count), 'dim')}" if exhaust_count else ""
+    print(f"  {c(t(f'Round {rnd}',f'回合 {rnd}'), 'bold')}  {t('Energy','能量')}{c(f'{energy}/{max_energy}', 'cyan')}  {t('Draw','抽牌')}{draw}  {t('Discard','弃牌')}{discard}{exhaust_str}")
+
+    # Warn if a non-exhaust card is in the exhaust pile (debug aid)
+    exhaust_pile = state.get("exhaust_pile") or []
+    if exhaust_pile:
+        hand_ids = {cd.get("id") for cd in (state.get("hand") or [])}
+        for ex in exhaust_pile:
+            ex_id = ex.get("id", "")
+            ex_name = n(ex.get("name", ex_id))
+            print(f"  {c(t(f'[Exhausted: {ex_name}]', f'[已消耗: {ex_name}]'), 'yellow')}")
     show_player(state.get("player", {}))
+
+    # Player powers / buffs / debuffs
+    player_powers = state.get("player_powers") or []
+    if player_powers:
+        buff_parts, debuff_parts = [], []
+        for pw in player_powers:
+            amt = pw.get("amount", "")
+            amt_str = f"{amt:+}" if isinstance(amt, int) and amt != 0 else (str(amt) if amt else "")
+            label = f"{n(pw['name'])}{amt_str}"
+            if _power_is_debuff(pw):
+                debuff_parts.append(c(label, "red"))
+            else:
+                buff_parts.append(c(label, "green"))
+        parts = buff_parts + ([c("|", "dim")] + debuff_parts if debuff_parts else [])
+        print(f"    {' '.join(parts)}")
 
     # Character-specific: Necrobinder's Osty (show near player)
     osty = state.get("osty")
@@ -454,12 +537,18 @@ def show_combat(state):
                 intent_parts.append(c(itype, "dim"))
         intent_str = " ".join(intent_parts) if intent_parts else c("? ???", "dim")
 
-        # Enemy powers
+        # Enemy powers — debuffs on enemies are good for the player (green), buffs are bad (red)
         powers = e.get("powers") or []
         power_str = ""
         if powers:
-            pw_parts = [f"{n(pw['name'])}{pw.get('amount','')}" for pw in powers]
-            power_str = "  " + c(" ".join(pw_parts), "dim")
+            pw_parts = []
+            for pw in powers:
+                amt = pw.get("amount", "")
+                amt_str = f"{amt:+}" if isinstance(amt, int) and amt != 0 else (str(amt) if amt else "")
+                label = f"{n(pw['name'])}{amt_str}"
+                col = "green" if _power_is_debuff(pw) else "red"
+                pw_parts.append(c(label, col))
+            power_str = "  " + " ".join(pw_parts)
 
         print(f"  [{e['index']+1}] {n(e['name'])}  {bar(hp, mhp)} {hp}/{mhp}"
               + (f"  {c(str(blk), 'blue')}{t('blk','挡')}" if blk else "")
@@ -467,6 +556,20 @@ def show_combat(state):
 
     print()
     hand = state.get("hand", [])
+
+    # Pre-pass: compute max visual prefix width so all arrows align vertically
+    # Prefix = "  ● [N] name (cost) XUnitSuffix"
+    _arrow_col = 0
+    for _cd in hand:
+        if _cd.get("target_type") == "AnyEnemy" and "damage" in (_cd.get("stats") or {}):
+            _name = n(_cd.get("name", "?"))
+            _cost = str(_cd.get("cost", 0)) + (f"+{_cd['star_cost']}⭐" if _cd.get("star_cost") else "")
+            _base = str(_cd["stats"]["damage"])
+            _unit = t("dmg", "伤")
+            _w = _vis_width(f"  ● [{_cd['index']+1}] {_name} ({_cost}) {_base}{_unit}")
+            if _w > _arrow_col:
+                _arrow_col = _w
+
     for card in hand:
         cost = card.get("cost", 0)
         playable = card.get("can_play", False)
@@ -480,11 +583,56 @@ def show_combat(state):
         if star_cost > 0:
             cost_str += f"+{c(f'{star_cost}⭐', 'yellow')}"
 
-        # Show damage/block inline, plus description for non-trivial cards
+        # Show damage/block inline with effective preview values when they differ from base
         stats = card.get("stats") or {}
+        preview = card.get("preview_stats") or {}
+        per_enemy = card.get("per_enemy_damage") or {}
         stat_parts = []
-        if "damage" in stats: stat_parts.append(c(f"{stats['damage']}{t('dmg','伤')}", "red"))
-        if "block" in stats: stat_parts.append(c(f"{stats['block']}{t('blk','挡')}", "blue"))
+        if "damage" in stats:
+            base_dmg = stats["damage"]
+            _unit = t("dmg", "伤")
+            # Padding to align all arrows at the same column
+            if target == "AnyEnemy" and _arrow_col:
+                _name_plain = n(card.get("name", "?"))
+                _cost_plain = str(cost) + (f"+{star_cost}⭐" if star_cost else "")
+                _prefix_w = _vis_width(f"  ● [{card['index']+1}] {_name_plain} ({_cost_plain}) {base_dmg}{_unit}")
+                _pad = " " * max(0, _arrow_col - _prefix_w)
+            else:
+                _pad = ""
+            dmg_label = c(f"{base_dmg}{_unit}", "red") + _pad
+            if target == "AnyEnemy" and per_enemy:
+                # Unified format: base → effective (inline arrow, no trailing arrow)
+                unique_vals = set(per_enemy.values())
+                if len(unique_vals) == 1:
+                    eff = next(iter(unique_vals))
+                    if eff != base_dmg:
+                        col = "green" if eff > base_dmg else "red"
+                        dmg_str = f"{dmg_label} {c('→', 'yellow')} {c(str(eff), col)}"
+                    else:
+                        dmg_str = f"{dmg_label} {c('→', 'yellow')}"
+                else:
+                    parts = [f"[{int(ei)+1}]{c(str(dmg), 'green' if dmg > base_dmg else 'red')}"
+                             for ei, dmg in sorted(per_enemy.items())]
+                    dmg_str = f"{dmg_label} {c('→', 'yellow')} {' '.join(parts)}"
+            elif target == "AnyEnemy":
+                dmg_str = f"{dmg_label} {c('→', 'yellow')}"
+            else:
+                # Non-targeted (AOE etc.): show effective in parens if different
+                eff_dmg = preview.get("damage", base_dmg)
+                if eff_dmg != base_dmg:
+                    col = "green" if eff_dmg > base_dmg else "red"
+                    dmg_str = c(f"{eff_dmg}{t('dmg','伤')}", col) + c(f"({base_dmg})", "dim")
+                else:
+                    dmg_str = dmg_label
+            stat_parts.append(dmg_str)
+        if "block" in stats:
+            base_blk = stats["block"]
+            eff_blk = preview.get("block", base_blk)
+            if eff_blk != base_blk:
+                col = "green" if eff_blk > base_blk else "red"
+                stat_parts.append(c(f"{eff_blk}{t('blk','挡')}", col) + c(f"({base_blk})", "dim"))
+            else:
+                stat_parts.append(c(f"{base_blk}{t('blk','挡')}", "blue"))
         stat_str = " ".join(stat_parts)
 
         # Show description if card has no damage/block (so effect isn't obvious from stats)
@@ -498,6 +646,10 @@ def show_combat(state):
             lines = cd_d.split("\n")
             if len(lines) > 1:
                 extra_desc = f"  {c(lines[-1], 'dim')}"
+        elif cd_d:
+            # Only damage/block stats — show first line for context (e.g. "3 times", "to ALL enemies")
+            first_line = cd_d.split("\n")[0]
+            extra_desc = f"  {c(first_line, 'dim')}"
 
         # Show keywords (Innate, Exhaust, Ethereal, etc.)
         KW_ZH = {"Exhaust": "消耗", "Innate": "固有", "Ethereal": "虚无", "Retain": "保留", "Sly": "奇巧", "Eternal": "永恒", "Unplayable": "不能被打出"}
@@ -507,12 +659,14 @@ def show_combat(state):
         ench = card.get("enchantment")
         ench_str = f" {c(n(ench), 'magenta')}" if ench else ""
 
+        # Arrow is embedded in dmg_str for AnyEnemy cards with damage; only append standalone for damage-less targeted cards
+        trailing_arrow = target == "AnyEnemy" and "damage" not in stats
         print(f"  {mark} [{card['index']+1}] {c(n(card['name']), type_color)}{ench_str} ({cost_str}) {stat_str}{kw_str}{extra_desc}"
-              + (f"  {c('→','yellow')}" if target == "AnyEnemy" else ""))
+              + (f"  {c('→','yellow')}" if trailing_arrow else ""))
 
 def show_map(state, send_fn=None):
     """Show map at map_select. Fetches full map if send_fn available."""
-    choices = sorted(state.get("choices", []), key=lambda ch: ch["col"])
+    choices = state.get("choices", [])
     choice_set = {(ch["col"], ch["row"]) for ch in choices}
 
     # Try to fetch full map for richer display
@@ -576,7 +730,21 @@ def _format_upgrade_preview(stats, aug, current_cost=None):
             elif k == "block":
                 parts.append(c(f"{t('blk','格挡')} {old}→{new_val}", "blue"))
             else:
-                parts.append(c(f"{old}→{new_val}", "green"))
+                _STAT_NAMES = {
+                    "weakpower": t("Weak", "虚弱"),
+                    "vulnerablepower": t("Vuln", "易伤"),
+                    "poisonpower": t("Poison", "毒"),
+                    "strengthloss": t("Str", "力量"),
+                    "strengthpower": t("Str", "力量"),
+                    "dexteritypower": t("Dex", "敏捷"),
+                    "magicnumber": t("N", "N"),
+                    "hits": t("hits", "次"),
+                    "cards": t("cards", "张"),
+                    "gold": t("gold", "金"),
+                    "hp": t("HP", "HP"),
+                }
+                label = _STAT_NAMES.get(k, k)
+                parts.append(c(f"{label} {old}→{new_val}", "green"))
     # Keyword changes (e.g., Discovery removes Exhaust)
     KW_ZH = {"Exhaust": "消耗", "Innate": "固有", "Ethereal": "虚无", "Retain": "保留", "Sly": "奇巧", "Eternal": "永恒", "Unplayable": "不能被打出"}
     for kw in (aug.get("removed_keywords") or []):
@@ -584,6 +752,52 @@ def _format_upgrade_preview(stats, aug, current_cost=None):
     for kw in (aug.get("added_keywords") or []):
         parts.append(c(f"+{t(kw, KW_ZH.get(kw, kw))}", "yellow"))
     return parts
+
+_KW_ZH = {"Exhaust": "消耗", "Innate": "固有", "Ethereal": "虚无", "Retain": "保留",
+          "Sly": "奇巧", "Eternal": "永恒", "Unplayable": "不能被打出"}
+_TYPE_ORDER = ["Attack", "Skill", "Power", "Status", "Curse"]
+_TYPE_COLOR = {"Attack": "red", "Skill": "blue", "Power": "magenta", "Status": "dim", "Curse": "dim"}
+
+def _print_card_list(cards, show_rarity=False):
+    """Print cards in compact grouped format, one card per line."""
+    if not cards:
+        return
+    from collections import defaultdict
+    groups: dict = defaultdict(list)
+    for cd in cards:
+        groups[cd.get("type", "Status")].append(cd)
+    max_nw = max(
+        (_vis_width(n(cd["name"])) + (1 if cd.get("upgraded") else 0) for cd in cards),
+        default=4
+    )
+    for typ in _TYPE_ORDER:
+        if typ not in groups:
+            continue
+        label = t(typ, CARD_TYPE_ZH.get(typ, typ))
+        col = _TYPE_COLOR.get(typ, "dim")
+        bar_len = max(0, 44 - _vis_width(label))
+        print(f"  {c(label, col)} {c('─' * bar_len, 'dim')}")
+        for cd in groups[typ]:
+            idx = cd.get("index", 0)
+            nm = n(cd["name"])
+            up_mark = c("+", "green") if cd.get("upgraded") else ""
+            name_w = _vis_width(nm) + (1 if cd.get("upgraded") else 0)
+            pad = " " * (max_nw - name_w + 1)
+            cost = cd.get("cost", "?")
+            cd_d = card_desc(cd)
+            cd_d = " ".join(cd_d.split("\n")) if cd_d else ""
+            kws = cd.get("keywords") or []
+            kw_str = (" " + " ".join(c(f"[{t(k, _KW_ZH.get(k,k))}]", "dim") for k in kws)) if kws else ""
+            aug_parts = _format_upgrade_preview(cd.get("stats") or {}, cd.get("after_upgrade"), cd.get("cost"))
+            aug_str = (f"  {c(t('升: ','升: '), 'green')}" + " ".join(aug_parts)) if aug_parts else ""
+            rarity_str = ""
+            if show_rarity:
+                rarity = cd.get("rarity", "Common")
+                if rarity != "Common":
+                    rarity_color = {"Rare": "yellow", "Uncommon": "cyan"}.get(rarity, "dim")
+                    rarity_str = f"  {c(t(rarity, RARITY_ZH.get(rarity, rarity)), rarity_color)}"
+            print(f"    [{idx+1}] {nm}{up_mark}{pad}({cost})  {c(cd_d, 'dim')}{kw_str}{aug_str}{rarity_str}")
+
 
 def show_card_reward(state):
     print(f"\n{'─' * 60}")
@@ -593,24 +807,7 @@ def show_card_reward(state):
     print(f"  {c(t('Card Reward','卡牌奖励'), 'bold')} — {t('choose one (or skip)','选一张（或跳过）')}")
     show_player(state.get("player", {}))
     print()
-    for card in state.get("cards", []):
-        ctype = card.get("type", "?")
-        rarity = card.get("rarity", "Common")
-        cost = card.get("cost", "?")
-        type_color = {"Attack": "red", "Skill": "blue", "Power": "magenta"}.get(ctype, "reset")
-        rarity_zh = RARITY_ZH.get(rarity, rarity)
-        rarity_label = t(rarity, rarity_zh)
-        rarity_color = {"Rare": "yellow", "Uncommon": "cyan"}.get(rarity, "dim")
-        stats = card.get("stats") or {}
-        cd_desc = card_desc(card)
-
-        print(f"  [{card['index']+1}] {c(n(card['name']), type_color)} ({cost}) {c(rarity_label, rarity_color)}")
-        if cd_desc:
-            print(f"      {c(cd_desc, 'dim')}")
-        # Show upgrade preview
-        aug_parts = _format_upgrade_preview(stats, card.get("after_upgrade"), card.get("cost"))
-        if aug_parts:
-            print(f"      {c(t('upgrade:','升级:'), 'green')} {', '.join(aug_parts)}")
+    _print_card_list(state.get("cards", []), show_rarity=True)
 
 def show_shop(state):
     print(f"\n{'─' * 60}")
@@ -626,8 +823,8 @@ def show_shop(state):
         sale = c(t(" SALE"," 打折"), "yellow") if card.get("on_sale") else ""
         ctype_zh = CARD_TYPE_ZH.get(card.get("type",""), card.get("type",""))
         cd = card_desc(card)
-        desc_str = f" — {c(cd, 'dim')}" if cd else ""
-        print(f"  [{card['index']+1}] {n(card['name'])} ({t(card.get('type','?'), ctype_zh)}){desc_str} — {affordable}{t('g','金')}{sale}")
+        desc_str = f" — {c(cd.replace(chr(10), ' '), 'dim')}" if cd else ""
+        print(f"  [{card['index']+1}] {n(card['name'])} ({t(card.get('type','?'), ctype_zh)}) — {affordable}{t('g','金')}{sale}{desc_str}")
 
     print(f"\n  {c(t('Relics:','遗物:'), 'bold')}")
     for r in state.get("relics", []):
@@ -636,8 +833,8 @@ def show_shop(state):
         affordable = c(str(cost), "green") if cost <= gold else c(str(cost), "red")
         d = desc(r.get("description", {}))
         d = resolve_template(d, r.get("vars") or {})
-        desc_str = f": {c(d, 'dim')}" if d else ""
-        print(f"  [r{r['index']+1}] {n(r['name'])}{desc_str} — {affordable}{t('g','金')}")
+        desc_str = f" — {c(d, 'dim')}" if d else ""
+        print(f"  [r{r['index']+1}] {n(r['name'])} — {affordable}{t('g','金')}{desc_str}")
 
     print(f"\n  {c(t('Potions:','药水:'), 'bold')}")
     for p in state.get("potions", []):
@@ -646,15 +843,15 @@ def show_shop(state):
         affordable = c(str(cost), "green") if cost <= gold else c(str(cost), "red")
         d = desc(p.get("description", {}))
         d = resolve_template(d, p.get("vars") or {})
-        desc_str = f": {c(d, 'dim')}" if d else ""
-        print(f"  [p{p['index']+1}] {n(p['name'])}{desc_str} — {affordable}{t('g','金')}")
+        desc_str = f" — {c(d, 'dim')}" if d else ""
+        print(f"  [p{p['index']+1}] {n(p['name'])} — {affordable}{t('g','金')}{desc_str}")
 
     removal_cost = state.get("card_removal_cost")
     if removal_cost:
         affordable = c(str(removal_cost), "green") if removal_cost <= gold else c(str(removal_cost), "red")
         print(f"\n  [rm] {t('Remove a card','移除一张牌')} — {affordable}{t('g','金')}")
 
-    print(f"\n  [leave] {t('Leave shop','离开商店')}")
+    print(f"\n  [leave/q] {t('Leave shop','离开商店')}")
 
 REST_OPTIONS_ZH = {"HEAL": "休息", "SMITH": "升级", "LIFT": "锻炼", "DIG": "挖掘", "RECALL": "回忆", "TOKE": "吸食"}
 
@@ -949,8 +1146,8 @@ def _handle_meta(raw, state=None):
     战斗:    卡牌编号 / {c('e', 'yellow')} 结束回合 / {c('p1', 'yellow')} 使用药水
     奖励:    卡牌编号 / {c('s', 'yellow')} 跳过
     休息:    选项编号
-    事件:    选项编号 / {c('leave', 'yellow')} 离开
-    商店:    {c('c1', 'yellow')} 买卡 / {c('r1', 'yellow')} 遗物 / {c('p1', 'yellow')} 药水 / {c('rm', 'yellow')} 移除 / {c('leave', 'yellow')} 离开
+    事件:    选项编号 / {c('leave/q', 'yellow')} 离开
+    商店:    {c('c1', 'yellow')} 买卡 / {c('r1', 'yellow')} 遗物 / {c('p1', 'yellow')} 药水 / {c('rm', 'yellow')} 移除 / {c('leave/q', 'yellow')} 离开
 """)
         else:
             print(f"""
@@ -967,8 +1164,8 @@ def _handle_meta(raw, state=None):
     Combat:  card index / {c('e', 'yellow')} end turn / {c('p1', 'yellow')} use potion
     Reward:  card index / {c('s', 'yellow')} skip
     Rest:    option index
-    Event:   option index / {c('leave', 'yellow')} leave
-    Shop:    {c('c1', 'yellow')} card / {c('r1', 'yellow')} relic / {c('p1', 'yellow')} potion / {c('rm', 'yellow')} remove / {c('leave', 'yellow')} leave
+    Event:   option index / {c('leave/q', 'yellow')} leave
+    Shop:    {c('c1', 'yellow')} card / {c('r1', 'yellow')} relic / {c('p1', 'yellow')} potion / {c('rm', 'yellow')} remove / {c('leave/q', 'yellow')} leave
 """)
         return True
     if raw == "deck" and state:
@@ -988,15 +1185,14 @@ def _handle_meta(raw, state=None):
         return True
     if raw == "map":
         if hasattr(get_input, '_send'):
-            map_data = get_input._send({"cmd": "get_map"})
-            if map_data and map_data.get("type") == "map":
-                # Build choice_set: use state choices if at map_select, else
-                # derive from current node's children in the map data
-                choice_set = set()
-                if state and state.get("decision") == "map_select":
-                    for ch in state.get("choices", []):
-                        choice_set.add((ch["col"], ch["row"]))
-                else:
+            # During map_select: reuse show_map so choices are printed below the map
+            if state and state.get("decision") == "map_select":
+                show_map(state, send_fn=get_input._send)
+            else:
+                map_data = get_input._send({"cmd": "get_map"})
+                if map_data and map_data.get("type") == "map":
+                    # Highlight next reachable nodes from current position
+                    choice_set = set()
                     cur = map_data.get("current_coord")
                     if cur:
                         for row in map_data.get("rows", []):
@@ -1004,9 +1200,9 @@ def _handle_meta(raw, state=None):
                                 if nd.get("col") == cur["col"] and nd.get("row") == cur["row"]:
                                     for child in (nd.get("children") or []):
                                         choice_set.add((child["col"], child["row"]))
-                _render_map(map_data, choice_set)
-            else:
-                print("  Map not available.")
+                    _render_map(map_data, choice_set)
+                else:
+                    print("  Map not available.")
         elif state:
             ctx = state.get("context", {})
             print(f"  {c(n(ctx.get('act_name','?')), 'bold')} Floor {ctx.get('floor','?')}")
@@ -1028,7 +1224,14 @@ def get_input(prompt, valid_options=None, state=None):
         if not raw:
             continue
         if _handle_meta(raw, state):
+            if state and state.get("decision") == "combat_play":
+                print(f"  {c(t('(leave/q: back to combat)','(leave/q: 返回战斗)'), 'dim')}")
             continue
+        if state and state.get("decision") == "combat_play" and raw in ("q", "leave"):
+            show_combat(state)
+            continue
+        if raw == "q" and valid_options and "leave" in valid_options:
+            raw = "leave"
         if valid_options and raw not in valid_options:
             print(f"  {t('Invalid. Options:','无效。选项:')} {', '.join(sorted(valid_options))}")
             continue
@@ -1097,8 +1300,8 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0):
                 break
 
             elif dec == "map_select":
-                show_map(state, send_fn=send)
-                choices = state.get("choices", [])
+                choices = sorted(state.get("choices", []), key=lambda ch: ch["col"])
+                show_map({**state, "choices": choices}, send_fn=send)
 
                 if auto:
                     if len(choices) == 1:
@@ -1227,18 +1430,7 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0):
                 show_player(state.get("player", {}))
                 print()
                 cards = state.get("cards", [])
-                for cd in cards:
-                    up = c("+", "green") if cd.get("upgraded") else ""
-                    stats = cd.get("stats") or {}
-                    ctype_zh = CARD_TYPE_ZH.get(cd.get("type", ""), cd.get("type", ""))
-                    ctype_label = t(cd.get("type", ""), ctype_zh)
-                    cd_desc_text = card_desc(cd)
-                    print(f"  [{cd['index']+1}] {n(cd['name'])}{up} ({cd.get('cost','?')}) {c(ctype_label, 'dim')}")
-                    if cd_desc_text:
-                        print(f"      {c(cd_desc_text, 'dim')}")
-                    aug_parts = _format_upgrade_preview(stats, cd.get("after_upgrade"), cd.get("cost"))
-                    if aug_parts:
-                        print(f"      {c(t('upgrade:','升级:'), 'green')} {', '.join(aug_parts)}")
+                _print_card_list(cards)
 
                 valid = {str(cd["index"]+1): cd for cd in cards}
 
@@ -1274,6 +1466,9 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0):
                             print(f"  {t('Invalid indices:','无效编号:')} {', '.join(invalid)}. "
                                   f"{t('Valid:','可选:')} {', '.join(sorted(valid.keys()))}")
                             continue
+                        if len(tokens) != len(set(tokens)):
+                            print(f"  {t('Duplicate indices not allowed.','不能选重复的编号。')}")
+                            continue
                         if len(tokens) < min_sel or len(tokens) > max_sel:
                             print(f"  {t(f'Select {min_sel}-{max_sel} cards (got {len(tokens)}).', f'需要选 {min_sel}-{max_sel} 张（已选 {len(tokens)} 张）。')}")
                             continue
@@ -1293,7 +1488,7 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0):
                 if auto:
                     choice = "leave"
                 else:
-                    choice = get_input(t("Buy [index/r1/p1/rm] or (leave)", "购买 [编号/r1/p1/rm] 或 (leave)离开"), state=state)
+                    choice = get_input(t("Buy [c1/r1/p1/rm] or (leave/q)", "购买 [c1/r1/p1/rm] 或 (leave/q)离开"), state=state)
 
                 if choice == "leave":
                     state = send({"cmd": "action", "action": "leave_room"})
@@ -1305,6 +1500,9 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0):
                 elif choice.startswith("p"):
                     state = send({"cmd": "action", "action": "buy_potion",
                                  "args": {"potion_index": int(choice[1:]) - 1}})
+                elif choice.startswith("c"):
+                    state = send({"cmd": "action", "action": "buy_card",
+                                 "args": {"card_index": int(choice[1:]) - 1}})
                 else:
                     state = send({"cmd": "action", "action": "buy_card",
                                  "args": {"card_index": int(choice) - 1}})
@@ -1313,22 +1511,26 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0):
                 show_rest_site(state)
                 options = state.get("options", [])
                 enabled = [o for o in options if o.get("is_enabled")]
-                valid = {str(o["index"]+1): o for o in enabled}
 
-                if auto:
-                    hp = state.get("player", {}).get("hp", 1)
-                    mhp = state.get("player", {}).get("max_hp", 1)
-                    heal = next((o for o in enabled if o.get("option_id") == "HEAL"), None)
-                    smith = next((o for o in enabled if o.get("option_id") == "SMITH"), None)
-                    pick = (heal if hp < mhp * 0.7 else smith) or (heal or (enabled[0] if enabled else None))
-                    choice = str(pick["index"]+1) if pick else "1"
-                else:
-                    choice = get_input(t("Choose option [index]", "选择 [编号]"), set(valid.keys()), state=state)
-
-                state = send({"cmd": "action", "action": "choose_option",
-                             "args": {"option_index": valid[choice]["index"]}})
-                if state and state.get("type") == "error":
+                if not enabled:
                     state = send({"cmd": "action", "action": "leave_room"})
+                else:
+                    valid = {str(o["index"]+1): o for o in enabled}
+
+                    if auto:
+                        hp = state.get("player", {}).get("hp", 1)
+                        mhp = state.get("player", {}).get("max_hp", 1)
+                        heal = next((o for o in enabled if o.get("option_id") == "HEAL"), None)
+                        smith = next((o for o in enabled if o.get("option_id") == "SMITH"), None)
+                        pick = (heal if hp < mhp * 0.7 else smith) or heal or enabled[0]
+                        choice = str(pick["index"]+1)
+                    else:
+                        choice = get_input(t("Choose option [index]", "选择 [编号]"), set(valid.keys()), state=state)
+
+                    state = send({"cmd": "action", "action": "choose_option",
+                                 "args": {"option_index": valid[choice]["index"]}})
+                    if state and state.get("type") == "error":
+                        state = send({"cmd": "action", "action": "leave_room"})
 
             elif dec == "event_choice":
                 show_event(state)
@@ -1348,7 +1550,7 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0):
                 if auto:
                     choice = str(unlocked[0]["index"]+1) if unlocked else "leave"
                 else:
-                    choice = get_input(t("Choose option [index] or (leave)", "选择 [编号] 或 (leave)离开"), set(valid.keys()), state=state)
+                    choice = get_input(t("Choose option [index] or (leave/q)", "选择 [编号] 或 (leave/q)离开"), set(valid.keys()), state=state)
 
                 if choice == "leave":
                     state = send({"cmd": "action", "action": "leave_room"})

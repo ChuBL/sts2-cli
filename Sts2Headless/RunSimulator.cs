@@ -426,6 +426,12 @@ public class RunSimulator
             return Error($"Card could not be played (still in hand after action): {card.GetType().Name} [{card.Id}]");
         }
 
+        // Log where the card ended up (discard vs exhaust) for debugging
+        if (pcs.ExhaustPile?.Cards?.Contains(card) == true)
+            Log($"  → {card.GetType().Name} [{card.Id}] was EXHAUSTED after play");
+        else if (pcs.DiscardPile?.Cards?.Contains(card) == true)
+            Log($"  → {card.GetType().Name} [{card.Id}] went to discard after play");
+
         return DetectDecisionPoint();
     }
 
@@ -451,6 +457,7 @@ public class RunSimulator
         WaitForActionExecutor();
 
         Log($"Ending turn (round={CombatManager.Instance.DebugOnlyGetState()?.RoundNumber ?? 0})");
+        var exhaustBefore = player.PlayerCombatState?.ExhaustPile?.Cards?.Select(c => c.Id.Entry).ToHashSet() ?? new();
         _turnStarted.Reset();
         _combatEnded.Reset();
 
@@ -583,6 +590,11 @@ public class RunSimulator
                 }
             }
         }
+
+        // Log cards newly exhausted during end-of-turn / enemy turn
+        var exhaustAfter = player.PlayerCombatState?.ExhaustPile?.Cards?.Select(c => c.Id.Entry).ToHashSet() ?? new();
+        foreach (var id in exhaustAfter.Except(exhaustBefore))
+            Log($"  → Card [{id}] was EXHAUSTED during end-of-turn/enemy-turn phase");
 
         return DetectDecisionPoint();
     }
@@ -1373,6 +1385,10 @@ public class RunSimulator
         if (player.Creature != null && player.Creature.CurrentHp > 0)
             _lastKnownHp = player.Creature.CurrentHp;
 
+        // Collect live enemy creatures for per-enemy preview
+        var liveEnemies = combatState?.Enemies?.Where(e => e != null && e.IsAlive).ToList()
+            ?? new List<MegaCrit.Sts2.Core.Entities.Creatures.Creature>();
+
         var hand = pcs?.Hand?.Cards?.Select((c, i) =>
         {
             // Extract actual stat values from DynamicVars
@@ -1382,6 +1398,42 @@ public class RunSimulator
                 foreach (var dv in c.DynamicVars.Values)
                 {
                     stats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue;
+                }
+            }
+            catch { }
+
+            // Compute effective preview values using the engine's hover-preview API
+            // (same system the actual game uses — accounts for Strength, Weak, Frail, relics, etc.)
+            var previewStats = new Dictionary<string, object?>();
+            Dictionary<int, int>? perEnemyDamage = null;
+            try
+            {
+                // Base preview (no target) — captures Strength, Weak, Frail, Dex, relics, etc.
+                c.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, c.DynamicVars);
+                foreach (var dv in c.DynamicVars.Values)
+                {
+                    var pv = (int)dv.PreviewValue;
+                    if (pv != (int)dv.BaseValue)
+                        previewStats[dv.Name.ToLowerInvariant()] = pv;
+                }
+                c.DynamicVars.ClearPreview();
+
+                // Per-enemy damage preview (captures Vulnerable on specific enemies)
+                if (liveEnemies.Count > 0 && stats.ContainsKey("damage"))
+                {
+                    int baseDmg = (int)stats["damage"]!;
+                    var dmgByEnemy = new Dictionary<int, int>();
+                    for (int ei = 0; ei < liveEnemies.Count; ei++)
+                    {
+                        c.UpdateDynamicVarPreview(CardPreviewMode.Normal, liveEnemies[ei], c.DynamicVars);
+                        var dmgDv = c.DynamicVars.Values.FirstOrDefault(d =>
+                            string.Equals(d.Name, "damage", StringComparison.OrdinalIgnoreCase));
+                        dmgByEnemy[ei] = dmgDv != null ? (int)dmgDv.PreviewValue : baseDmg;
+                        c.DynamicVars.ClearPreview();
+                    }
+
+                    // Always send all per-enemy values; Python owns display logic
+                    perEnemyDamage = dmgByEnemy;
                 }
             }
             catch { }
@@ -1397,6 +1449,8 @@ public class RunSimulator
                 ["can_play"] = c.CanPlay(out _, out _),
                 ["target_type"] = c.TargetType.ToString(),
                 ["stats"] = stats.Count > 0 ? stats : null,
+                ["preview_stats"] = previewStats.Count > 0 ? previewStats : null,
+                ["per_enemy_damage"] = perEnemyDamage,
                 ["description"] = _loc.Bilingual("cards", c.Id.Entry + ".description"),
             };
             if (starCost > 0)
@@ -1458,6 +1512,7 @@ public class RunSimulator
                 // Enemy powers
                 var ePowers = e.Powers?.Select(pw => new Dictionary<string, object?>
                 {
+                    ["id"] = pw.Id.Entry,
                     ["name"] = _loc.Power(pw.Id.Entry),
                     ["amount"] = pw.Amount,
                 }).ToList();
@@ -1478,6 +1533,7 @@ public class RunSimulator
         // Player powers/buffs
         var playerPowers = player.Creature?.Powers?.Select(pw => new Dictionary<string, object?>
         {
+            ["id"] = pw.Id.Entry,
             ["name"] = _loc.Power(pw.Id.Entry),
             ["amount"] = pw.Amount,
         }).ToList();
@@ -1496,6 +1552,11 @@ public class RunSimulator
             ["player_powers"] = playerPowers?.Count > 0 ? playerPowers : null,
             ["draw_pile_count"] = pcs?.DrawPile?.Cards?.Count ?? 0,
             ["discard_pile_count"] = pcs?.DiscardPile?.Cards?.Count ?? 0,
+            ["exhaust_pile_count"] = pcs?.ExhaustPile?.Cards?.Count ?? 0,
+            ["exhaust_pile"] = pcs?.ExhaustPile?.Cards?.Select(c => new Dictionary<string, object?> {
+                ["id"] = c.Id.Entry,
+                ["name"] = _loc.Card(c.Id.Entry),
+            }).ToList(),
         };
 
         // Character-specific mechanics
@@ -1778,9 +1839,42 @@ public class RunSimulator
                         foreach (var dv in localEvent.DynamicVars.Values)
                         {
                             if (_cardTypeVarNames.Contains(dv.Name))
+                            {
                                 optVars[dv.Name] = _loc.Bilingual("gameplay_ui", "CARD_TYPE." + dv.Name.ToUpperInvariant());
+                            }
                             else
-                                optVars[dv.Name] = (int)dv.BaseValue;
+                            {
+                                // Try to resolve card-reference vars (e.g. RandomCard) to a localized name
+                                // via reflection: look for a CardModel field/property with the same name on the event
+                                object? resolved = null;
+                                try
+                                {
+                                    var eventType = localEvent.GetType();
+                                    var member =
+                                        (System.Reflection.MemberInfo?)
+                                        eventType.GetField(dv.Name,
+                                            System.Reflection.BindingFlags.Instance |
+                                            System.Reflection.BindingFlags.Public |
+                                            System.Reflection.BindingFlags.NonPublic |
+                                            System.Reflection.BindingFlags.IgnoreCase)
+                                        ?? (System.Reflection.MemberInfo?)
+                                        eventType.GetProperty(dv.Name,
+                                            System.Reflection.BindingFlags.Instance |
+                                            System.Reflection.BindingFlags.Public |
+                                            System.Reflection.BindingFlags.NonPublic |
+                                            System.Reflection.BindingFlags.IgnoreCase);
+                                    if (member != null)
+                                    {
+                                        object? val = member is System.Reflection.FieldInfo fi
+                                            ? fi.GetValue(localEvent)
+                                            : ((System.Reflection.PropertyInfo)member).GetValue(localEvent);
+                                        if (val is CardModel cm)
+                                            resolved = _loc.Card(cm.Id.Entry);
+                                    }
+                                }
+                                catch { }
+                                optVars[dv.Name] = resolved ?? (int)dv.BaseValue;
+                            }
                         }
                     }
                 }
@@ -2776,25 +2870,21 @@ public class RunSimulator
         }
 
 
-        /// <summary>Harmony prefix: replace Neutralize.OnPlay with safe damage+weak.</summary>
+        /// <summary>
+        /// Harmony prefix: null-guard for Neutralize.OnPlay.
+        /// Only intercepts when target is null (prevents NullRef in DamageCmd.Attack).
+        /// When target is present, returns true to let the original OnPlay run normally
+        /// so the engine's card disposal logic (discard vs exhaust) works correctly.
+        /// </summary>
         public static bool NeutralizePrefix(CardModel __instance, ref Task __result,
             PlayerChoiceContext choiceContext, CardPlay cardPlay)
         {
-            if (cardPlay.Target == null) { __result = Task.CompletedTask; return false; }
-            __result = NeutralizeSafe(__instance, choiceContext, cardPlay);
-            return false;
-        }
-
-        private static async Task NeutralizeSafe(CardModel card, PlayerChoiceContext ctx, CardPlay play)
-        {
-            try
+            if (cardPlay.Target == null)
             {
-                await CreatureCmd.Damage(ctx, play.Target!, card.DynamicVars.Damage.BaseValue,
-                    MegaCrit.Sts2.Core.ValueProps.ValueProp.Move, card);
-                await PowerCmd.Apply<WeakPower>(play.Target!, card.DynamicVars["WeakPower"].BaseValue,
-                    card.Owner.Creature, card);
+                __result = Task.CompletedTask;
+                return false; // skip original — no target to hit
             }
-            catch (Exception ex) { Console.Error.WriteLine($"[WARN] Neutralize safe: {ex.Message}"); }
+            return true; // let original OnPlay handle damage, weak, and card disposal
         }
 
         public static bool HasEntryPrefix(ref bool __result)

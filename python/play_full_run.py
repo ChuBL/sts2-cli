@@ -9,7 +9,15 @@ import sys
 import random
 import os
 
-DOTNET = os.path.expanduser("~/.dotnet-arm64/dotnet")
+def _find_dotnet():
+    for p in [os.path.expanduser("~/.dotnet-arm64/dotnet"),
+              os.path.expanduser("~/.dotnet/dotnet"),
+              "/usr/local/share/dotnet/dotnet", "dotnet"]:
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return "dotnet"
+
+DOTNET = _find_dotnet()
 PROJECT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "Sts2Headless", "Sts2Headless.csproj")
 

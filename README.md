@@ -68,11 +68,11 @@ Type `help` in-game:
   quit     — quit
 
   Map:     path number (1, 2, 3...)
-  Combat:  card index / e (end turn) / p1 (use potion 1)
+  Combat:  card index / e (end turn) / p1 (use potion 1) / q (return to combat view)
   Reward:  card index / s (skip)
   Rest:    option index
-  Event:   option index / leave
-  Shop:    c1 (card) / r1 (relic) / p1 (potion) / rm (remove) / leave
+  Event:   option index / leave or q
+  Shop:    c1 (card) / r1 (relic) / p1 (potion) / rm (remove) / leave or q
 ```
 
 All indices start from **1**. For selections requiring multiple cards (e.g. an event asking you to remove 2), enter indices separated by commas or spaces:
@@ -201,11 +201,11 @@ python3 python/play.py -c Defect --ascension 4  # 完整参数
   quit     — 退出
 
   地图:    输入编号 (1, 2, 3...)
-  战斗:    输入卡牌编号 / e 结束回合 / p1 使用药水1
+  战斗:    输入卡牌编号 / e 结束回合 / p1 使用药水1 / q 返回战斗视图
   奖励:    输入卡牌编号 / s 跳过
   休息:    输入选项编号
-  事件:    输入选项编号 / leave 离开
-  商店:    c1 买卡 / r1 买遗物 / p1 买药水 / rm 移除 / leave 离开
+  事件:    输入选项编号 / leave 或 q 离开
+  商店:    c1 买卡 / r1 买遗物 / p1 买药水 / rm 移除 / leave 或 q 离开
 ```
 
 所有编号从 **1** 开始。需要选择多张卡牌时（如某些事件要求移除2张），用逗号或空格分隔编号：
