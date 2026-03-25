@@ -426,12 +426,6 @@ public class RunSimulator
             return Error($"Card could not be played (still in hand after action): {card.GetType().Name} [{card.Id}]");
         }
 
-        // Log where the card ended up (discard vs exhaust) for debugging
-        if (pcs.ExhaustPile?.Cards?.Contains(card) == true)
-            Log($"  → {card.GetType().Name} [{card.Id}] was EXHAUSTED after play");
-        else if (pcs.DiscardPile?.Cards?.Contains(card) == true)
-            Log($"  → {card.GetType().Name} [{card.Id}] went to discard after play");
-
         return DetectDecisionPoint();
     }
 
@@ -457,7 +451,6 @@ public class RunSimulator
         WaitForActionExecutor();
 
         Log($"Ending turn (round={CombatManager.Instance.DebugOnlyGetState()?.RoundNumber ?? 0})");
-        var exhaustBefore = player.PlayerCombatState?.ExhaustPile?.Cards?.Select(c => c.Id.Entry).ToHashSet() ?? new();
         _turnStarted.Reset();
         _combatEnded.Reset();
 
@@ -590,11 +583,6 @@ public class RunSimulator
                 }
             }
         }
-
-        // Log cards newly exhausted during end-of-turn / enemy turn
-        var exhaustAfter = player.PlayerCombatState?.ExhaustPile?.Cards?.Select(c => c.Id.Entry).ToHashSet() ?? new();
-        foreach (var id in exhaustAfter.Except(exhaustBefore))
-            Log($"  → Card [{id}] was EXHAUSTED during end-of-turn/enemy-turn phase");
 
         return DetectDecisionPoint();
     }
