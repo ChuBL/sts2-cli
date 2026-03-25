@@ -764,7 +764,8 @@ def _print_card_list(cards, show_index=True, show_rarity=False):
                 prefix = f"[{idx+1}] "
             else:
                 prefix = ""
-            print(f"    {prefix}{nm}{up_mark}{pad}({cost})  {c(cd_d, 'dim')}{kw_str}{aug_str}{rarity_str}")
+            desc_str = c(cd_d, "dim") if cd_d else ""
+            print(f"    {prefix}{nm}{up_mark}{pad}({cost})  {desc_str}{kw_str}{aug_str}{rarity_str}")
 
 
 def show_card_reward(state):
