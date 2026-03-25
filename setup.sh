@@ -148,6 +148,7 @@ rm -f "$PATCH_DIR/Patcher.csproj.bak"
 cat > "$PATCH_DIR/Program.cs" << 'CSHARP'
 using System;
 using System.IO;
+using System.Linq;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 
@@ -215,6 +216,206 @@ foreach (var type in module.Types)
             Console.WriteLine($"  Patched {type.Name}.{method.Name} → Task.CompletedTask");
         }
     }
+}
+
+// Patch 3: Neutralize.OnPlay — fix null cardPlay.Target in headless mode
+// Adds PlayCardAction._headlessTarget (static field) + FillNullTarget(CardPlay) helper,
+// then injects FillNullTarget(this.cardPlay) at the start of Neutralize.OnPlay.MoveNext.
+try
+{
+    var pcaType = module.Types.FirstOrDefault(t => t.Name == "PlayCardAction");
+    var cardPlayType = module.Types.FirstOrDefault(t => t.Name == "CardPlay");
+    var neutralizeType = module.Types.FirstOrDefault(t => t.Name == "Neutralize");
+    var creatureTypeDef = module.Types.FirstOrDefault(t =>
+        t.FullName == "MegaCrit.Sts2.Core.Entities.Creatures.Creature");
+
+    if (pcaType != null && cardPlayType != null && neutralizeType != null && creatureTypeDef != null)
+    {
+        var creatureTypeRef = module.ImportReference(creatureTypeDef);
+        var cardPlayTypeRef = module.ImportReference(cardPlayType);
+
+        // Find CardPlay.<Target>k__BackingField
+        var targetBacking = cardPlayType.Fields.FirstOrDefault(f => f.Name == "<Target>k__BackingField");
+
+        if (targetBacking != null)
+        {
+            // Make <Target>k__BackingField accessible from any assembly code
+            targetBacking.Attributes = (targetBacking.Attributes
+                & ~Mono.Cecil.FieldAttributes.FieldAccessMask)
+                | Mono.Cecil.FieldAttributes.Public;
+            Console.WriteLine("  Made <Target>k__BackingField public");
+
+            // 1. Add static field: PlayCardAction._headlessTarget (Creature?)
+            var headlessField = new FieldDefinition(
+                "_headlessTarget",
+                Mono.Cecil.FieldAttributes.Public | Mono.Cecil.FieldAttributes.Static,
+                creatureTypeRef);
+            pcaType.Fields.Add(headlessField);
+
+            // 2. Add instance method: CardPlay.FillNullTarget()  ← on CardPlay so it can access private fields
+            //    if (this.<Target>k__BackingField != null) return;
+            //    if (PlayCardAction._headlessTarget == null) return;
+            //    this.<Target>k__BackingField = PlayCardAction._headlessTarget;
+            var fillMethod = new MethodDefinition(
+                "FillNullTarget",
+                Mono.Cecil.MethodAttributes.Public,    // instance method on CardPlay
+                module.TypeSystem.Void);
+
+            var fillIL = fillMethod.Body.GetILProcessor();
+            var retInstr = fillIL.Create(OpCodes.Ret);
+
+            // if (this.Target != null) return
+            fillIL.Emit(OpCodes.Ldarg_0);
+            fillIL.Emit(OpCodes.Ldfld, targetBacking);
+            fillIL.Emit(OpCodes.Brtrue, retInstr);
+
+            // if (PlayCardAction._headlessTarget == null) return
+            fillIL.Emit(OpCodes.Ldsfld, headlessField);
+            fillIL.Emit(OpCodes.Brfalse, retInstr);
+
+            // this.Target = PlayCardAction._headlessTarget
+            fillIL.Emit(OpCodes.Ldarg_0);
+            fillIL.Emit(OpCodes.Ldsfld, headlessField);
+            fillIL.Emit(OpCodes.Stfld, targetBacking);
+
+            fillIL.Append(retInstr);
+
+            cardPlayType.Methods.Add(fillMethod);  // Add to CardPlay (owns the private field)
+
+            // 3. Inject call to FillNullTarget at start of Neutralize.<OnPlay>d__5.MoveNext
+            var onPlaySM = neutralizeType.NestedTypes.FirstOrDefault(t => t.Name.Contains("OnPlay"));
+            var moveNext = onPlaySM?.Methods.FirstOrDefault(m => m.Name == "MoveNext");
+            var cardPlayField = onPlaySM?.Fields.FirstOrDefault(f => f.Name == "cardPlay");
+
+            if (moveNext != null && moveNext.HasBody && cardPlayField != null)
+            {
+                var mnIL = moveNext.Body.GetILProcessor();
+                var first = moveNext.Body.Instructions[0];
+                var fillRef = module.ImportReference(fillMethod);
+                var cardPlayFieldRef = module.ImportReference(cardPlayField);
+
+                // Insert before first instruction: ldarg.0; ldfld cardPlay; callvirt FillNullTarget
+                // cardPlay is always non-null when OnPlay is called, so no null check needed
+                mnIL.InsertBefore(first, mnIL.Create(OpCodes.Ldarg_0));
+                mnIL.InsertBefore(first, mnIL.Create(OpCodes.Ldfld, cardPlayFieldRef));
+                mnIL.InsertBefore(first, mnIL.Create(OpCodes.Callvirt, fillRef));
+
+                patches++;
+                Console.WriteLine("  Patched Neutralize.OnPlay.MoveNext — FillNullTarget injected");
+            }
+            else
+            {
+                Console.WriteLine("  WARN: Could not find Neutralize.<OnPlay>d__5.MoveNext or cardPlay field");
+            }
+        }
+        else
+        {
+            Console.WriteLine("  WARN: Could not find CardPlay.<Target>k__BackingField");
+        }
+    }
+    else
+    {
+        Console.WriteLine("  WARN: Could not find required types for Neutralize patch");
+    }
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"  WARN: Neutralize patch failed: {ex.Message}");
+}
+
+// Patch 4: Null-guard SaveManager.get_Instance and get_PrefsSave in Neutralize.MoveNext.
+// In headless mode, SaveManager.Instance may be null or PrefsSave may not be loaded.
+// We add: dup; brfalse popAndSkip after each potentially-null call,
+// and insert pop; br skipTarget as the cleanup path.
+try
+{
+    var neutralize4 = module.Types.FirstOrDefault(t => t.Name == "Neutralize");
+    var onPlaySM4 = neutralize4?.NestedTypes.FirstOrDefault(t => t.Name.Contains("OnPlay"));
+    var moveNext4 = onPlaySM4?.Methods.FirstOrDefault(m => m.Name == "MoveNext");
+
+    if (moveNext4 != null && moveNext4.HasBody)
+    {
+        // --- Find all relevant instructions BEFORE any modifications ---
+        Instruction? smCall = null;   // call SaveManager::get_Instance
+        Instruction? pfCall = null;   // callvirt SaveManager::get_PrefsSave
+        Instruction? bneUn = null;    // bne.un.s (FastMode != 1)
+        Instruction? stloc2 = null;   // stloc.2 (stores adjusted delay)
+
+        foreach (var instr in moveNext4.Body.Instructions)
+        {
+            if (instr.OpCode == OpCodes.Call
+                && instr.Operand is MethodReference smRef
+                && smRef.DeclaringType.Name == "SaveManager"
+                && smRef.Name == "get_Instance")
+            {
+                smCall = instr;
+            }
+            else if (smCall != null && pfCall == null
+                && instr.OpCode == OpCodes.Callvirt
+                && instr.Operand is MethodReference pfRef
+                && pfRef.DeclaringType.Name == "SaveManager"
+                && pfRef.Name == "get_PrefsSave")
+            {
+                pfCall = instr;
+            }
+            else if (smCall != null && bneUn == null
+                && (instr.OpCode == OpCodes.Bne_Un_S || instr.OpCode == OpCodes.Bne_Un))
+            {
+                bneUn = instr;
+            }
+            else if (bneUn != null && stloc2 == null
+                && (instr.OpCode == OpCodes.Stloc_2
+                    || instr.OpCode == OpCodes.Stloc_S
+                    || instr.OpCode == OpCodes.Stloc))
+            {
+                stloc2 = instr; break;
+            }
+        }
+
+        if (smCall != null && bneUn != null)
+        {
+            var skipTarget4 = (Instruction)bneUn.Operand; // instr after FastMode block
+            var mnIL4 = moveNext4.Body.GetILProcessor();
+
+            // Build cleanup path: pop (one dangling stack value) then jump to skipTarget
+            var popNull4 = mnIL4.Create(OpCodes.Pop);
+            var brToSkip4 = mnIL4.Create(OpCodes.Br, skipTarget4);
+            mnIL4.InsertBefore(skipTarget4, brToSkip4);
+            mnIL4.InsertBefore(brToSkip4, popNull4);
+
+            // Non-null FastMode path: after stloc.2 we must jump OVER the cleanup
+            if (stloc2 != null)
+                mnIL4.InsertAfter(stloc2, mnIL4.Create(OpCodes.Br, skipTarget4));
+
+            // Upgrade bne.un.s → bne.un (branch distance may grow after insertions)
+            if (bneUn.OpCode == OpCodes.Bne_Un_S)
+                bneUn.OpCode = OpCodes.Bne_Un;
+
+            // Guard 1: null check for SaveManager.Instance
+            // After call get_Instance: dup; brfalse popNull4
+            mnIL4.InsertAfter(smCall, mnIL4.Create(OpCodes.Brfalse, popNull4));
+            mnIL4.InsertAfter(smCall, mnIL4.Create(OpCodes.Dup));
+
+            // Guard 2: null check for SaveManager.PrefsSave
+            // After callvirt get_PrefsSave: dup; brfalse popNull4
+            if (pfCall != null)
+            {
+                mnIL4.InsertAfter(pfCall, mnIL4.Create(OpCodes.Brfalse, popNull4));
+                mnIL4.InsertAfter(pfCall, mnIL4.Create(OpCodes.Dup));
+            }
+
+            patches++;
+            Console.WriteLine("  Patched Neutralize.MoveNext — SaveManager+PrefsSave null guards");
+        }
+        else
+        {
+            Console.WriteLine("  WARN: Could not find SaveManager.get_Instance or bne.un in Neutralize.MoveNext");
+        }
+    }
+}
+catch (Exception ex4)
+{
+    Console.WriteLine($"  WARN: SaveManager null-guard patch failed: {ex4.Message}");
 }
 
 Console.WriteLine($"Applied {patches} patches");

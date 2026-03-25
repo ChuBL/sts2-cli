@@ -4,6 +4,14 @@ All notable changes to sts2-cli are documented here.
 
 ---
 
+## Mar 25, 2026
+
+### Fixed
+- **Card selection indices now match visual order** — `card_reward` and `card_select` views now use sequential `[1]`, `[2]`, ... indices in the displayed (type-grouped) order; previously the engine's internal card index was shown, so e.g. `[11]` could appear between `[5]` and `[6]`; `_print_card_list` now returns the display-ordered list and callers build their input map from it
+- **Neutralize (中和) now deals damage and applies Weak** — `Neutralize.OnPlay` threw `NullReferenceException` in headless mode because `SaveManager.PrefsSave` is null (not loaded); fixed via two IL patches applied by `setup.sh` to `sts2.dll`: (1) adds `CardPlay.FillNullTarget()` injected at the start of `Neutralize.OnPlay.MoveNext` to propagate the resolved target from `PlayCardAction._headlessTarget` if `cardPlay.Target` is null; (2) adds `dup`/`brfalse` null guards around `SaveManager.get_Instance()` and `get_PrefsSave()` calls so the FastMode check is silently skipped when either is null in headless mode; `DoPlayCard` in `RunSimulator.cs` sets `PlayCardAction._headlessTarget` before enqueuing the action and clears it after
+
+---
+
 ## Mar 24, 2026
 
 ### Added

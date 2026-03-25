@@ -191,6 +191,11 @@ public class RunSimulator
     private RunState? _runState;
     private static bool _modelDbInitialized;
     private static readonly InlineSynchronizationContext _syncCtx = new();
+    // Cached reflection field for the IL-patched PlayCardAction._headlessTarget.
+    // Set before enqueuing PlayCardAction so Neutralize.OnPlay can resolve the target.
+    private static readonly System.Reflection.FieldInfo? _headlessTargetField =
+        typeof(PlayCardAction).GetField("_headlessTarget",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
     private readonly ManualResetEventSlim _turnStarted = new(false);
     private readonly ManualResetEventSlim _combatEnded = new(false);
     private static readonly LocLookup _loc = new();
@@ -415,9 +420,20 @@ public class RunSimulator
 
         var handCountBefore = hand.Count;
 
+        LocPatches.PendingCardTarget = target;
+        if (_headlessTargetField != null)
+        {
+            _headlessTargetField.SetValue(null, target);
+        }
+        else
+        {
+            Console.Error.WriteLine("[WARN] _headlessTargetField is NULL - IL patch not found");
+        }
         var playAction = new PlayCardAction(card, target);
         RunManager.Instance.ActionQueueSet.EnqueueWithoutSynchronizing(playAction);
         WaitForActionExecutor();
+        _headlessTargetField?.SetValue(null, null);
+        LocPatches.PendingCardTarget = null;
 
         // Check if card play had no effect (hand unchanged, same card still at same index)
         var handAfter = pcs.Hand.Cards;
@@ -2783,24 +2799,8 @@ public class RunSimulator
             }
             catch (Exception ex) { Console.Error.WriteLine($"[WARN] Bundle patch: {ex.Message}"); }
 
-            // Patch Neutralize.OnPlay to avoid NullRef in DamageCmd.Attack().Execute()
-            try
-            {
-                var neutralizeType = typeof(MegaCrit.Sts2.Core.Models.Cards.Neutralize);
-                var neutralizeOnPlay = neutralizeType.GetMethod("OnPlay",
-                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-                if (neutralizeOnPlay != null)
-                {
-                    var neutPrefix = typeof(LocPatches).GetMethod(nameof(LocPatches.NeutralizePrefix),
-                        System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
-                    if (neutPrefix != null)
-                    {
-                        harmony.Patch(neutralizeOnPlay, new HarmonyMethod(neutPrefix));
-                        Console.Error.WriteLine("[INFO] Patched Neutralize.OnPlay");
-                    }
-                }
-            }
-            catch (Exception ex) { Console.Error.WriteLine($"[WARN] Neutralize patch: {ex.Message}"); }
+            // Note: Neutralize.OnPlay NullRef in headless mode is fixed via IL patches in setup.sh
+            // (SaveManager null guard + FillNullTarget). Harmony-based fix is not used on .NET 10.
 
             // Patch HasEntry to always return true
             PatchMethod(harmony, typeof(LocTable), "HasEntry", nameof(LocPatches.HasEntryPrefix));
@@ -2848,6 +2848,11 @@ public class RunSimulator
 
     internal static class LocPatches
     {
+        /// <summary>
+        /// Set by DoPlayCard before enqueuing PlayCardAction so NeutralizePrefix can restore
+        /// cardPlay.Target when the engine's ID-based target resolution returns null in headless mode.
+        /// </summary>
+        internal static Creature? PendingCardTarget = null;
         public static bool GetRawTextPrefix(LocTable __instance, string key, ref string __result)
         {
             // Return key as fallback "translation"
@@ -2869,18 +2874,29 @@ public class RunSimulator
 
 
         /// <summary>
-        /// Harmony prefix: null-guard for Neutralize.OnPlay.
-        /// Only intercepts when target is null (prevents NullRef in DamageCmd.Attack).
-        /// When target is present, returns true to let the original OnPlay run normally
-        /// so the engine's card disposal logic (discard vs exhaust) works correctly.
+        /// Harmony prefix: fixes Neutralize.OnPlay in headless mode.
+        /// PlayCardAction's ID-based target resolution returns null in headless mode,
+        /// so cardPlay.Target is always null. We restore it from PendingCardTarget
+        /// (set by DoPlayCard before enqueuing) so the original OnPlay can run normally.
+        /// If no target is available at all (no enemies), skip the original to avoid NullRef.
         /// </summary>
         public static bool NeutralizePrefix(CardModel __instance, ref Task __result,
             PlayerChoiceContext choiceContext, CardPlay cardPlay)
         {
             if (cardPlay.Target == null)
             {
-                __result = Task.CompletedTask;
-                return false; // skip original — no target to hit
+                // Restore the target that DoPlayCard resolved — ID resolution failed in headless
+                var resolved = PendingCardTarget
+                    ?? CombatManager.Instance?.DebugOnlyGetState()?.Enemies?.FirstOrDefault(e => e != null && e.IsAlive);
+                if (resolved == null)
+                {
+                    __result = Task.CompletedTask;
+                    return false; // no valid target — skip to avoid NullRef
+                }
+                typeof(CardPlay)
+                    .GetField("<Target>k__BackingField",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    ?.SetValue(cardPlay, resolved);
             }
             return true; // let original OnPlay handle damage, weak, and card disposal
         }

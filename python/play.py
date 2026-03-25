@@ -721,11 +721,12 @@ _STAT_NAMES: dict[str, tuple[str, str]] = {
 
 def _print_card_list(cards, show_index=True, show_rarity=False):
     """Print cards in compact grouped format, one card per line.
-    show_index: prefix each card with [N] (for selection views); False for read-only deck views.
+    show_index: prefix each card with [N] using sequential visual positions.
     show_rarity: suffix Uncommon/Rare cards with a colored rarity label.
+    Returns the cards in the order they were displayed (type-grouped).
     """
     if not cards:
-        return
+        return []
     from collections import defaultdict
     groups: dict = defaultdict(list)
     for cd in cards:
@@ -734,6 +735,8 @@ def _print_card_list(cards, show_index=True, show_rarity=False):
         (_vis_width(n(cd["name"])) + (1 if cd.get("upgraded") else 0) for cd in cards),
         default=4
     )
+    display_order = []
+    disp_idx = 0
     for typ in _TYPE_ORDER + sorted(k for k in groups if k not in _TYPE_ORDER):
         if typ not in groups:
             continue
@@ -742,6 +745,7 @@ def _print_card_list(cards, show_index=True, show_rarity=False):
         bar_len = max(0, 44 - _vis_width(label))
         print(f"  {c(label, col)} {c('─' * bar_len, 'dim')}")
         for cd in groups[typ]:
+            display_order.append(cd)
             nm = n(cd["name"])
             up_mark = c("+", "green") if cd.get("upgraded") else ""
             name_w = _vis_width(nm) + (1 if cd.get("upgraded") else 0)
@@ -760,12 +764,13 @@ def _print_card_list(cards, show_index=True, show_rarity=False):
                     rarity_color = {"Rare": "yellow", "Uncommon": "cyan"}.get(rarity, "dim")
                     rarity_str = f"  {c(t(rarity, RARITY_ZH.get(rarity, rarity)), rarity_color)}"
             if show_index:
-                idx = cd.get("index", 0)
-                prefix = f"[{idx+1}] "
+                disp_idx += 1
+                prefix = f"[{disp_idx}] "
             else:
                 prefix = ""
             desc_str = c(cd_d, "dim") if cd_d else ""
             print(f"    {prefix}{nm}{up_mark}{pad}({cost})  {desc_str}{kw_str}{aug_str}{rarity_str}")
+    return display_order
 
 
 def show_card_reward(state):
@@ -776,7 +781,7 @@ def show_card_reward(state):
     print(f"  {c(t('Card Reward','卡牌奖励'), 'bold')} — {t('choose one (or skip)','选一张（或跳过）')}")
     show_player(state.get("player", {}))
     print()
-    _print_card_list(state.get("cards", []), show_rarity=True)
+    return _print_card_list(state.get("cards", []), show_rarity=True)
 
 def show_shop(state):
     print(f"\n{'─' * 60}")
@@ -1347,13 +1352,12 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0):
                     state = send({"cmd": "action", "action": "play_card", "args": args})
 
             elif dec == "card_reward":
-                show_card_reward(state)
-                cards = state.get("cards", [])
-                valid = {str(c["index"]+1): c for c in cards}
+                display_order = show_card_reward(state)
+                valid = {str(i+1): cd for i, cd in enumerate(display_order)}
                 valid["s"] = None  # skip
 
                 if auto:
-                    choice = str(cards[0]["index"]+1) if cards else "s"
+                    choice = "1" if display_order else "s"
                 else:
                     choice = get_input(t("Pick card [index] or (s)kip", "选择卡牌 [编号] 或 (s)跳过"), set(valid.keys()), state=state)
 
@@ -1399,12 +1403,12 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0):
                 show_player(state.get("player", {}))
                 print()
                 cards = state.get("cards", [])
-                _print_card_list(cards)
+                display_order = _print_card_list(cards)
 
-                valid = {str(cd["index"]+1): cd for cd in cards}
+                valid = {str(i+1): cd for i, cd in enumerate(display_order)}
 
                 if auto:
-                    choice_tokens = [str(cards[0]["index"]+1)] if cards else []
+                    choice_tokens = ["1"] if display_order else []
                     skip = not choice_tokens
                 else:
                     skip = False
@@ -1433,7 +1437,7 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0):
                         invalid = [tok for tok in tokens if tok not in valid]
                         if invalid:
                             print(f"  {t('Invalid indices:','无效编号:')} {', '.join(invalid)}. "
-                                  f"{t('Valid:','可选:')} {', '.join(sorted(valid.keys()))}")
+                                  f"{t('Valid:','可选:')} {', '.join(str(k) for k in sorted(valid.keys(), key=lambda x: int(x) if x.isdigit() else 0))}")
                             continue
                         if len(tokens) != len(set(tokens)):
                             print(f"  {t('Duplicate indices not allowed.','不能选重复的编号。')}")
