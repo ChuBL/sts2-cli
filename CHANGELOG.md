@@ -31,7 +31,7 @@ All notable changes to sts2-cli are documented here.
 - `play_full_run.py` `_find_dotnet()` now uses the same `subprocess.run --version` probe as `play.py`, correctly validating PATH-based candidates and staying consistent across scripts
 
 ### Fixed
-- **`DEBUFF_IDS` / `STAT_POWER_IDS` now use correct ID format** — power IDs from C# (`pw.Id.Entry`) are UPPER_SNAKE_CASE (e.g. `WEAK_POWER`), not PascalCase; previous entries never matched, breaking all buff/debuff coloring; `InvinciblePower` replaced with correct `INTANGIBLE_POWER`
+- **`DEBUFF_IDS` / `STAT_POWER_IDS` now use correct ID format** — power IDs from C# (`pw.Id.Entry`) are UPPER_SNAKE_CASE (e.g. `WEAK_POWER`), not PascalCase; previous PascalCase entries (e.g. `WeakPower`) never matched, breaking all buff/debuff coloring; `InvinciblePower` removed (Intangible is a buff for the enemy, not a player-visible debuff)
 - **Map choices sorted consistently** — `show_map()` and the `map_select` handler both sort by `(col, row)`, preventing label/selection mismatch when two choices share the same column
 - **Per-enemy damage display order** — `sorted(per_enemy.items())` now uses `key=lambda kv: int(kv[0])` to sort numerically; JSON string keys would sort lexicographically and could mis-order entries with 10+ enemies
 - **`ClearPreview()` now guaranteed via `try/finally`** — if `UpdateDynamicVarPreview` throws inside the base or per-enemy preview loop, preview state is now always cleared, preventing stale preview affecting subsequent card computations

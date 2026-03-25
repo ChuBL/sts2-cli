@@ -19,7 +19,7 @@ def _find_dotnet():
                 return p
         except (FileNotFoundError, subprocess.TimeoutExpired):
             continue
-    return "dotnet"
+    return None
 
 DOTNET = _find_dotnet()
 PROJECT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -28,6 +28,9 @@ PROJECT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 def play_run(seed: str, character: str = "Ironclad", verbose: bool = True):
     """Play a complete run and return the result."""
+    if not DOTNET:
+        print("Error: .NET SDK not found. Install from https://dotnet.microsoft.com/download")
+        sys.exit(1)
     proc = subprocess.Popen(
         [DOTNET, "run", "--no-build", "--project", PROJECT],
         stdin=subprocess.PIPE,
