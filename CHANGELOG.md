@@ -16,7 +16,7 @@ All notable changes to sts2-cli are documented here.
 - **Player powers/debuffs now shown in combat** — buffs (Strength, Dexterity, Artifact, etc.) appear in green, debuffs (Weak, Vulnerable, Frail, Poison, etc.) appear in red, separated by `|`; line is hidden when no powers are active
 - **Enemy powers are now color-coded** — enemy debuffs (Vulnerable, Weak on an enemy) appear in green (good for player), enemy buffs (Strength, Ritual) appear in red (threat to player); previously everything was dim gray
 - **Effective card damage/block** — card stats now show real-time effective values via the engine's `UpdateDynamicVarPreview` API (same system used by the actual game on hover); when effective differs from base, the effective value is highlighted and base shown in parentheses (e.g. `8伤(6)` with Strength +2)
-- **Per-enemy Vulnerable annotation** — for targeted attack cards, if Vulnerable varies between enemies the increased damage per vulnerable enemy is shown in yellow (e.g. `8伤 (12→[1])`)
+- **Per-enemy Vulnerable annotation** — for targeted attack cards, if Vulnerable varies between enemies the base damage is followed by a yellow `→` and per-enemy values with enemy index (e.g. `8伤 → [1]15 [2]8`); green = boosted, red = reduced; when all enemies share the same effective value, it is shown as a single `8伤 → 12`
 
 ### Changed
 - **Shop layout reordered** — all items now follow `name — price (SALE label if on sale) — description` order; card descriptions are collapsed to a single line

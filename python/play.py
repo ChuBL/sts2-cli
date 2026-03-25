@@ -536,7 +536,7 @@ def show_combat(state):
         ctype = card.get("type", "?")
         target = card.get("target_type", "")
 
-        type_color = {"Attack": "red", "Skill": "blue", "Power": "magenta", "Status": "dim", "Curse": "dim"}.get(ctype, "reset")
+        type_color = _TYPE_COLOR.get(ctype, "reset")
         mark = c("●", "green") if playable else c("○", "dim")
         star_cost = card.get("star_cost", 0)
         cost_str = c(str(cost), "cyan")
