@@ -734,7 +734,7 @@ def _print_card_list(cards, show_index=True, show_rarity=False):
         (_vis_width(n(cd["name"])) + (1 if cd.get("upgraded") else 0) for cd in cards),
         default=4
     )
-    for typ in _TYPE_ORDER:
+    for typ in _TYPE_ORDER + sorted(k for k in groups if k not in _TYPE_ORDER):
         if typ not in groups:
             continue
         label = t(typ, CARD_TYPE_ZH.get(typ, typ))
