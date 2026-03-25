@@ -29,7 +29,7 @@ Or just run `python3 python/play.py` — it auto-detects and sets up on first ru
 Add to `~/.zshrc` for a quick `sts2` shortcut:
 
 ```zsh
-alias sts2='uv run python3 /path/to/sts2-cli/python/play.py'
+alias sts2='python3 /path/to/sts2-cli/python/play.py'
 ```
 
 Then `source ~/.zshrc` and use `sts2` instead of the full command.

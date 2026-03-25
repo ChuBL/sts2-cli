@@ -607,9 +607,8 @@ def show_combat(state):
             if len(lines) > 1:
                 extra_desc = f"  {c(lines[-1], 'dim')}"
         elif cd_d:
-            # Only damage/block stats — show first line for context (e.g. "3 times", "to ALL enemies")
-            first_line = cd_d.split("\n")[0]
-            extra_desc = f"  {c(first_line, 'dim')}"
+            # Only damage/block stats — show full description (catches multi-line effects like Survivor's discard)
+            extra_desc = f"  {c(cd_d.replace(chr(10), ' '), 'dim')}"
 
         # Show keywords (Innate, Exhaust, Ethereal, etc.)
         KW_ZH = {"Exhaust": "消耗", "Innate": "固有", "Ethereal": "虚无", "Retain": "保留", "Sly": "奇巧", "Eternal": "永恒", "Unplayable": "不能被打出"}

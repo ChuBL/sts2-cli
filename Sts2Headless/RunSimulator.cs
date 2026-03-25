@@ -420,20 +420,22 @@ public class RunSimulator
 
         var handCountBefore = hand.Count;
 
-        LocPatches.PendingCardTarget = target;
-        if (_headlessTargetField != null)
-        {
-            _headlessTargetField.SetValue(null, target);
-        }
-        else
-        {
+        if (_headlessTargetField == null)
             Console.Error.WriteLine("[WARN] _headlessTargetField is NULL - IL patch not found");
+
+        try
+        {
+            LocPatches.PendingCardTarget = target;
+            _headlessTargetField?.SetValue(null, target);
+            var playAction = new PlayCardAction(card, target);
+            RunManager.Instance.ActionQueueSet.EnqueueWithoutSynchronizing(playAction);
+            WaitForActionExecutor();
         }
-        var playAction = new PlayCardAction(card, target);
-        RunManager.Instance.ActionQueueSet.EnqueueWithoutSynchronizing(playAction);
-        WaitForActionExecutor();
-        _headlessTargetField?.SetValue(null, null);
-        LocPatches.PendingCardTarget = null;
+        finally
+        {
+            _headlessTargetField?.SetValue(null, null);
+            LocPatches.PendingCardTarget = null;
+        }
 
         // Check if card play had no effect (hand unchanged, same card still at same index)
         var handAfter = pcs.Hand.Cards;
@@ -1169,9 +1171,12 @@ public class RunSimulator
             };
         }
 
-        // Check if there's a pending card selection (upgrade, remove, transform)
+        // Check if there's a pending card selection (upgrade, remove, transform, or combat discard)
         if (_cardSelector.HasPending && _cardSelector.PendingOptions != null)
         {
+            // Skip upgrade computation for mid-combat selections (discard/exhaust from hand).
+            // GetUpgradedInfo clones+upgrades every card, which is expensive for a full hand.
+            var inCombat = CombatManager.Instance?.IsInProgress == true;
             var opts = _cardSelector.PendingOptions.Select((card, i) =>
             {
                 var stats = new Dictionary<string, object?>();
@@ -1186,7 +1191,7 @@ public class RunSimulator
                     ["upgraded"] = card.IsUpgraded,
                     ["stats"] = stats.Count > 0 ? stats : null,
                     ["description"] = _loc.Bilingual("cards", card.Id.Entry + ".description"),
-                    ["after_upgrade"] = GetUpgradedInfo(card),
+                    ["after_upgrade"] = inCombat ? null : GetUpgradedInfo(card),
                 };
             }).ToList();
 
