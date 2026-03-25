@@ -690,33 +690,34 @@ def _format_upgrade_preview(stats, aug, current_cost=None):
             elif k == "block":
                 parts.append(c(f"{t('blk','格挡')} {old}→{new_val}", "blue"))
             else:
-                _STAT_NAMES = {
-                    "weakpower": t("Weak", "虚弱"),
-                    "vulnerablepower": t("Vuln", "易伤"),
-                    "poisonpower": t("Poison", "毒"),
-                    "strengthloss": t("Str", "力量"),
-                    "strengthpower": t("Str", "力量"),
-                    "dexteritypower": t("Dex", "敏捷"),
-                    "magicnumber": t("N", "N"),
-                    "hits": t("hits", "次"),
-                    "cards": t("cards", "张"),
-                    "gold": t("gold", "金"),
-                    "hp": t("HP", "HP"),
-                }
-                label = _STAT_NAMES.get(k, k)
+                entry = _STAT_NAMES.get(k)
+                label = t(*entry) if entry else k
                 parts.append(c(f"{label} {old}→{new_val}", "green"))
     # Keyword changes (e.g., Discovery removes Exhaust)
-    KW_ZH = {"Exhaust": "消耗", "Innate": "固有", "Ethereal": "虚无", "Retain": "保留", "Sly": "奇巧", "Eternal": "永恒", "Unplayable": "不能被打出"}
     for kw in (aug.get("removed_keywords") or []):
-        parts.append(c(f"-{t(kw, KW_ZH.get(kw, kw))}", "green"))
+        parts.append(c(f"-{t(kw, _KW_ZH.get(kw, kw))}", "green"))
     for kw in (aug.get("added_keywords") or []):
-        parts.append(c(f"+{t(kw, KW_ZH.get(kw, kw))}", "yellow"))
+        parts.append(c(f"+{t(kw, _KW_ZH.get(kw, kw))}", "yellow"))
     return parts
 
 _KW_ZH = {"Exhaust": "消耗", "Innate": "固有", "Ethereal": "虚无", "Retain": "保留",
           "Sly": "奇巧", "Eternal": "永恒", "Unplayable": "不能被打出"}
 _TYPE_ORDER = ["Attack", "Skill", "Power", "Status", "Curse"]
 _TYPE_COLOR = {"Attack": "red", "Skill": "blue", "Power": "magenta", "Status": "dim", "Curse": "dim"}
+# Upgrade preview stat labels: (en, zh) tuples resolved via t() at render time
+_STAT_NAMES: dict[str, tuple[str, str]] = {
+    "weakpower":       ("Weak",   "虚弱"),
+    "vulnerablepower": ("Vuln",   "易伤"),
+    "poisonpower":     ("Poison", "毒"),
+    "strengthloss":    ("Str",    "力量"),
+    "strengthpower":   ("Str",    "力量"),
+    "dexteritypower":  ("Dex",    "敏捷"),
+    "magicnumber":     ("N",      "N"),
+    "hits":            ("hits",   "次"),
+    "cards":           ("cards",  "张"),
+    "gold":            ("gold",   "金"),
+    "hp":              ("HP",     "HP"),
+}
 
 def _print_card_list(cards, show_index=True, show_rarity=False):
     """Print cards in compact grouped format, one card per line.

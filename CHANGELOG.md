@@ -23,8 +23,12 @@ All notable changes to sts2-cli are documented here.
 - Power JSON now includes `"id"` field (UPPER_SNAKE_CASE, e.g. `"WEAK_POWER"`) alongside the localized name, enabling language-independent buff/debuff classification
 - Card JSON now includes `"preview_stats"` (effective values after modifiers) and `"per_enemy_damage"` (per-enemy damage when Vulnerable varies) fields
 - Per-enemy damage preview in C# now only runs for `AnyEnemy` target cards, skipping the per-enemy loop for AOE and self-targeting cards
+- `exhaust_pile` field now omitted (null) when empty instead of always sending a full list, reducing JSON payload size in combats with no exhausted cards
 - Upgrade preview label now bilingual: `Up:` in English, `升:` in Chinese (was showing `升:` in both)
 - Help text combat line now lists `q` (return to combat view) alongside `e` and `p1`
+- `_STAT_NAMES` upgrade label map moved to module-level constant (was re-allocated inside per-stat loop on every call); stored as `(en, zh)` tuples resolved via `t()` at render time to stay language-correct
+- `_format_upgrade_preview` keyword changes now use shared `_KW_ZH` constant instead of a local duplicate dict
+- `play_full_run.py` `_find_dotnet()` now uses the same `subprocess.run --version` probe as `play.py`, correctly validating PATH-based candidates and staying consistent across scripts
 
 ### Fixed
 - **`DEBUFF_IDS` / `STAT_POWER_IDS` now use correct ID format** — power IDs from C# (`pw.Id.Entry`) are UPPER_SNAKE_CASE (e.g. `WEAK_POWER`), not PascalCase; previous entries never matched, breaking all buff/debuff coloring; `InvinciblePower` replaced with correct `INTANGIBLE_POWER`

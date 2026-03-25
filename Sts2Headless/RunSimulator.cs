@@ -1561,10 +1561,12 @@ public class RunSimulator
             ["draw_pile_count"] = pcs?.DrawPile?.Cards?.Count ?? 0,
             ["discard_pile_count"] = pcs?.DiscardPile?.Cards?.Count ?? 0,
             ["exhaust_pile_count"] = pcs?.ExhaustPile?.Cards?.Count ?? 0,
-            ["exhaust_pile"] = pcs?.ExhaustPile?.Cards?.Select(c => new Dictionary<string, object?> {
-                ["id"] = c.Id.Entry,
-                ["name"] = _loc.Card(c.Id.Entry),
-            }).ToList(),
+            ["exhaust_pile"] = pcs?.ExhaustPile?.Cards?.Count > 0
+                ? pcs!.ExhaustPile!.Cards!.Select(c => new Dictionary<string, object?> {
+                    ["id"] = c.Id.Entry,
+                    ["name"] = _loc.Card(c.Id.Entry),
+                }).ToList()
+                : null,
         };
 
         // Character-specific mechanics

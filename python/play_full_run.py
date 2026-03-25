@@ -13,8 +13,12 @@ def _find_dotnet():
     for p in [os.path.expanduser("~/.dotnet-arm64/dotnet"),
               os.path.expanduser("~/.dotnet/dotnet"),
               "/usr/local/share/dotnet/dotnet", "dotnet"]:
-        if os.path.isfile(p) and os.access(p, os.X_OK):
-            return p
+        try:
+            r = subprocess.run([p, "--version"], capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                return p
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
     return "dotnet"
 
 DOTNET = _find_dotnet()
