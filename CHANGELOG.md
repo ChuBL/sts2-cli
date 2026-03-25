@@ -13,40 +13,31 @@ All notable changes to sts2-cli are documented here.
 - **Meta-commands during combat no longer auto-redisplay combat** — after `help`, `deck`, `map`, `potions`, or `relics`, a `(q: 返回战斗)` hint is shown; type `q` or `leave` to explicitly return to the combat view
 - **`map` during path selection shows numbered choices** — typing `map` while choosing a path now shows the full map with the numbered path options below it, identical to the initial display
 - **Exhaust pile now tracked in combat** — exhaust count shown in combat header when non-zero; each exhausted card listed by name; C# now exposes `pcs.ExhaustPile` with count and card list; end-of-turn exhaust events logged to stderr
-
-### Fixed
-- **Neutralize (中和) no longer exhausted after play** — a Harmony patch that fully replaced `Neutralize.OnPlay` was causing the card to end up in the exhaust pile instead of the discard pile after play; the patch was originally added to prevent a NullRef crash when `cardPlay.Target` is null; narrowed it to a null-guard only (returns `true` to let the original `OnPlay` run when target is present)
-- **`play_full_run.py` no longer crashes if `.dotnet-arm64` path is missing** — dotnet binary discovery now tries multiple paths (same fallback logic as `play.py`)
-- **Unresolved localization keys now display cleanly** — power/card names that fall back to raw loc keys (e.g. `MANGLE_POWER.title`) are now cleaned to title-case display names (e.g. `Mangle Power`)
-
----
-
-## Mar 24, 2026
-
-### Changed
-- **Shop layout reordered** — all items now follow `name — price (SALE label if on sale) — description` order; card descriptions are collapsed to a single line
-
-### Fixed
-- **Event option card-name vars now resolve correctly** — e.g. SLIPPERY_BRIDGE "跨越" showed `0将从你的牌组中被移除` instead of the actual card name; fixed by reflecting on the event object to find `CardModel` fields/properties matching the DynamicVar name (covers `RandomCard` and similarly named vars in other events)
-- **Rest site no longer crashes when all options are disabled** — e.g. full HP (HEAL disabled) with no upgradable cards (SMITH disabled) now automatically leaves the room instead of raising `KeyError`
-- **Shop `c1`/`c2`... syntax now works** — entering `c1` to buy a card no longer crashes with `ValueError`; bare numbers (e.g. `1`) still accepted as before
-- **Map path numbering now consistent** — `show_map()` and the selection handler both use the same column-sorted order, preventing a mismatch where index `1` could point to a different path than shown
-- **Multi-card selection rejects duplicate indices** — entering `1,1` now shows an error instead of counting the same card twice toward the required selection count
-- **Hand card descriptions now shown for multi-hit and other single-stat cards** — cards like 痛殴 (Pummel) that only have a `damage` stat but carry meaningful description text (e.g. "3 times") now show their first description line inline; previously only cards with extra stat keys or no stats at all would show descriptions
-
----
-
-## Mar 24, 2026
-
-### Added
 - **Player powers/debuffs now shown in combat** — buffs (Strength, Dexterity, Artifact, etc.) appear in green, debuffs (Weak, Vulnerable, Frail, Poison, etc.) appear in red, separated by `|`; line is hidden when no powers are active
 - **Enemy powers are now color-coded** — enemy debuffs (Vulnerable, Weak on an enemy) appear in green (good for player), enemy buffs (Strength, Ritual) appear in red (threat to player); previously everything was dim gray
 - **Effective card damage/block** — card stats now show real-time effective values via the engine's `UpdateDynamicVarPreview` API (same system used by the actual game on hover); when effective differs from base, the effective value is highlighted and base shown in parentheses (e.g. `8伤(6)` with Strength +2)
 - **Per-enemy Vulnerable annotation** — for targeted attack cards, if Vulnerable varies between enemies the increased damage per vulnerable enemy is shown in yellow (e.g. `8伤 (12→[1])`)
 
 ### Changed
-- Power JSON now includes `"id"` field (e.g. `"WeakPower"`, `"StrengthPower"`) alongside the localized name, enabling language-independent buff/debuff classification
+- **Shop layout reordered** — all items now follow `name — price (SALE label if on sale) — description` order; card descriptions are collapsed to a single line
+- Power JSON now includes `"id"` field (UPPER_SNAKE_CASE, e.g. `"WEAK_POWER"`) alongside the localized name, enabling language-independent buff/debuff classification
 - Card JSON now includes `"preview_stats"` (effective values after modifiers) and `"per_enemy_damage"` (per-enemy damage when Vulnerable varies) fields
+- Per-enemy damage preview in C# now only runs for `AnyEnemy` target cards, skipping the per-enemy loop for AOE and self-targeting cards
+
+### Fixed
+- **`DEBUFF_IDS` / `STAT_POWER_IDS` now use correct ID format** — power IDs from C# (`pw.Id.Entry`) are UPPER_SNAKE_CASE (e.g. `WEAK_POWER`), not PascalCase; previous entries never matched, breaking all buff/debuff coloring; `InvinciblePower` replaced with correct `INTANGIBLE_POWER`
+- **Map choices sorted consistently** — `show_map()` now sorts choices by `(col, row)` the same way the main loop does, preventing index mismatch when typing `map` during path selection
+- **Shop `q` no longer crashes** — entering `q` in the shop (advertised as a leave alias) no longer falls through to `int("q")` and raises `ValueError`; handled explicitly before the numeric buy-card path
+- **Neutralize (中和) no longer exhausted after play** — a Harmony patch that fully replaced `Neutralize.OnPlay` was causing the card to end up in the exhaust pile instead of the discard pile after play; narrowed to a null-guard only
+- **`play_full_run.py` no longer crashes if `.dotnet-arm64` path is missing** — dotnet binary discovery now tries multiple paths (same fallback logic as `play.py`)
+- **Unresolved localization keys now display cleanly** — power/card names that fall back to raw loc keys (e.g. `MANGLE_POWER.title`) are now cleaned to title-case display names (e.g. `Mangle Power`)
+- **Event option card-name vars now resolve correctly** — e.g. SLIPPERY_BRIDGE "跨越" showed `0将从你的牌组中被移除` instead of the actual card name
+- **Rest site no longer crashes when all options are disabled**
+- **Shop `c1`/`c2`... syntax now works** — entering `c1` to buy a card no longer crashes with `ValueError`
+- **Map path numbering now consistent** — `show_map()` and the selection handler both use the same column-sorted order
+- **Multi-card selection rejects duplicate indices**
+- **Hand card descriptions now shown for multi-hit and other single-stat cards**
+- Removed unused `hand_ids` variable in exhaust pile display; simplified exhaust card rendering
 
 ---
 

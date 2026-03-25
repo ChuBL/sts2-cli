@@ -1419,7 +1419,9 @@ public class RunSimulator
                 c.DynamicVars.ClearPreview();
 
                 // Per-enemy damage preview (captures Vulnerable on specific enemies)
-                if (liveEnemies.Count > 0 && stats.ContainsKey("damage"))
+                // Only needed for single-target cards — AOE/self cards don't use per_enemy_damage
+                if (liveEnemies.Count > 0 && stats.ContainsKey("damage")
+                    && c.TargetType == TargetType.AnyEnemy)
                 {
                     int baseDmg = (int)stats["damage"]!;
                     var dmgByEnemy = new Dictionary<int, int>();
