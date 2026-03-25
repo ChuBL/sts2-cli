@@ -17,7 +17,7 @@ def _find_dotnet():
             r = subprocess.run([p, "--version"], capture_output=True, text=True, timeout=5)
             if r.returncode == 0:
                 return p
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.TimeoutExpired):
             continue
     return None
 
