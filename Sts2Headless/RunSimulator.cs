@@ -421,10 +421,14 @@ public class RunSimulator
 
         var handCountBefore = hand.Count;
 
-        if (_headlessTargetField == null && !_headlessTargetFieldWarnedOnce)
+        if (_headlessTargetField == null)
         {
-            _headlessTargetFieldWarnedOnce = true;
-            Console.Error.WriteLine("[WARN] _headlessTargetField is NULL - IL patch not found");
+            if (!_headlessTargetFieldWarnedOnce)
+            {
+                _headlessTargetFieldWarnedOnce = true;
+                Console.Error.WriteLine("[WARN] _headlessTargetField is NULL - IL patch not found");
+            }
+            return Error("Required headless targeting IL patch not found; cannot safely play card.");
         }
 
         try
@@ -1893,6 +1897,23 @@ public class RunSimulator
                                             : ((System.Reflection.PropertyInfo)member).GetValue(localEvent);
                                         if (val is CardModel cm)
                                             resolved = _loc.Card(cm.Id.Entry);
+                                        else if (val is RelicModel rm)
+                                            resolved = _loc.Relic(rm.Id.Entry);
+                                        else if (val != null)
+                                        {
+                                            // Generic fallback: try .Id.Entry via reflection (covers enchantments, etc.)
+                                            var idProp = val.GetType().GetProperty("Id");
+                                            var id = idProp?.GetValue(val);
+                                            var entryProp = id?.GetType().GetProperty("Entry");
+                                            var entry = entryProp?.GetValue(id) as string;
+                                            if (entry != null)
+                                            {
+                                                var enchLoc = _loc.Bilingual("enchantments", entry + ".title");
+                                                if (enchLoc != null && enchLoc.TryGetValue("en", out var enchEn)
+                                                    && enchEn as string != entry + ".title")
+                                                    resolved = enchLoc;
+                                            }
+                                        }
                                     }
                                 }
                                 catch { }
@@ -2808,8 +2829,9 @@ public class RunSimulator
             }
             catch (Exception ex) { Console.Error.WriteLine($"[WARN] Bundle patch: {ex.Message}"); }
 
-            // Note: Neutralize.OnPlay NullRef in headless mode is fixed via IL patches in setup.sh
-            // (SaveManager null guard + FillNullTarget). Harmony-based fix is not used on .NET 10.
+            // Note: 0-cost card OnPlay NullRefs in headless mode are fixed via IL patches in setup.sh
+            // (SaveManager null guard applied to all card OnPlay state machines; CardPlay.get_Target
+            // rewritten to fall back to PlayCardAction._headlessTarget). No Harmony-based fix is used.
 
             // Patch HasEntry to always return true
             PatchMethod(harmony, typeof(LocTable), "HasEntry", nameof(LocPatches.HasEntryPrefix));
@@ -2904,7 +2926,9 @@ public class RunSimulator
                 }
                 typeof(CardPlay)
                     .GetField("<Target>k__BackingField",
-                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                        System.Reflection.BindingFlags.Instance |
+                        System.Reflection.BindingFlags.NonPublic |
+                        System.Reflection.BindingFlags.Public)
                     ?.SetValue(cardPlay, resolved);
             }
             return true; // let original OnPlay handle damage, weak, and card disposal

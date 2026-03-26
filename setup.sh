@@ -225,11 +225,10 @@ try
 {
     var pcaType = module.Types.FirstOrDefault(t => t.Name == "PlayCardAction");
     var cardPlayType = module.Types.FirstOrDefault(t => t.Name == "CardPlay");
-    var neutralizeType = module.Types.FirstOrDefault(t => t.Name == "Neutralize");
     var creatureTypeDef = module.Types.FirstOrDefault(t =>
         t.FullName == "MegaCrit.Sts2.Core.Entities.Creatures.Creature");
 
-    if (pcaType != null && cardPlayType != null && neutralizeType != null && creatureTypeDef != null)
+    if (pcaType != null && cardPlayType != null && creatureTypeDef != null)
     {
         var creatureTypeRef = module.ImportReference(creatureTypeDef);
         var cardPlayTypeRef = module.ImportReference(cardPlayType);
@@ -302,43 +301,57 @@ try
                 Console.WriteLine("  CardPlay.FillNullTarget already exists; skipping");
             }
 
-            // 3. Inject call to FillNullTarget at start of Neutralize.<OnPlay>d__5.MoveNext
-            var onPlaySM = neutralizeType.NestedTypes.FirstOrDefault(t => t.Name.Contains("OnPlay"));
-            var moveNext = onPlaySM?.Methods.FirstOrDefault(m => m.Name == "MoveNext");
-            var cardPlayField = onPlaySM?.Fields.FirstOrDefault(f => f.Name == "cardPlay");
-
-            if (moveNext != null && moveNext.HasBody && cardPlayField != null)
+            // 3. Rewrite CardPlay.get_Target to fall back to PlayCardAction._headlessTarget when null.
+            //    This fixes ALL cards with async OnPlay (not just Neutralize).
+            //    get_Target() { var t = <Target>k__BackingField; if (t != null) return t; return _headlessTarget; }
+            var getTarget = cardPlayType.Methods.FirstOrDefault(m => m.Name == "get_Target");
+            if (getTarget != null && getTarget.HasBody)
             {
-                // Guard: skip if FillNullTarget is already called (DLL already patched)
-                var alreadyPatched = moveNext.Body.Instructions.Any(i =>
-                    i.OpCode == OpCodes.Callvirt &&
-                    i.Operand is MethodReference mr &&
-                    mr.Name == "FillNullTarget");
+                // Guard: skip if already patched (contains ldsfld _headlessTarget)
+                var alreadyPatched3 = getTarget.Body.Instructions.Any(i =>
+                    i.OpCode == OpCodes.Ldsfld &&
+                    i.Operand is FieldReference fr3 &&
+                    fr3.Name == "_headlessTarget");
 
-                if (alreadyPatched)
+                if (alreadyPatched3)
                 {
-                    Console.WriteLine("  Neutralize.OnPlay.MoveNext already patched; skipping");
+                    Console.WriteLine("  CardPlay.get_Target already patched; skipping");
                 }
                 else
                 {
-                    var mnIL = moveNext.Body.GetILProcessor();
-                    var first = moveNext.Body.Instructions[0];
-                    var fillRef = module.ImportReference(fillMethod);
-                    var cardPlayFieldRef = module.ImportReference(cardPlayField);
+                    var gtIL = getTarget.Body.GetILProcessor();
+                    gtIL.Body.Instructions.Clear();
+                    gtIL.Body.Variables.Clear();
 
-                    // Insert before first instruction: ldarg.0; ldfld cardPlay; callvirt FillNullTarget
-                    // cardPlay is always non-null when OnPlay is called, so no null check needed
-                    mnIL.InsertBefore(first, mnIL.Create(OpCodes.Ldarg_0));
-                    mnIL.InsertBefore(first, mnIL.Create(OpCodes.Ldfld, cardPlayFieldRef));
-                    mnIL.InsertBefore(first, mnIL.Create(OpCodes.Callvirt, fillRef));
+                    // var t = this.<Target>k__BackingField
+                    var localT = new Mono.Cecil.Cil.VariableDefinition(creatureTypeRef);
+                    getTarget.Body.Variables.Add(localT);
+                    getTarget.Body.InitLocals = true;
+
+                    var retInstr3 = gtIL.Create(OpCodes.Ldloc_0);  // load t for return
+
+                    gtIL.Emit(OpCodes.Ldarg_0);
+                    gtIL.Emit(OpCodes.Ldfld, targetBacking);
+                    gtIL.Emit(OpCodes.Stloc_0);
+
+                    // if (t != null) return t;
+                    gtIL.Emit(OpCodes.Ldloc_0);
+                    gtIL.Emit(OpCodes.Brtrue_S, retInstr3);
+
+                    // return PlayCardAction._headlessTarget;
+                    gtIL.Emit(OpCodes.Ldsfld, headlessField);
+                    gtIL.Emit(OpCodes.Ret);
+
+                    gtIL.Append(retInstr3);
+                    gtIL.Emit(OpCodes.Ret);
 
                     patches++;
-                    Console.WriteLine("  Patched Neutralize.OnPlay.MoveNext — FillNullTarget injected");
+                    Console.WriteLine("  Patched CardPlay.get_Target — headless fallback added");
                 }
             }
             else
             {
-                Console.WriteLine("  WARN: Could not find Neutralize.<OnPlay>d__5.MoveNext or cardPlay field");
+                Console.WriteLine("  WARN: Could not find CardPlay.get_Target");
             }
         }
         else
@@ -348,113 +361,118 @@ try
     }
     else
     {
-        Console.WriteLine("  WARN: Could not find required types for Neutralize patch");
+        Console.WriteLine("  WARN: Could not find required types for CardPlay/PlayCardAction patch");
     }
 }
 catch (Exception ex)
 {
-    Console.WriteLine($"  WARN: Neutralize patch failed: {ex.Message}");
+    Console.WriteLine($"  WARN: CardPlay.get_Target patch failed: {ex.Message}");
 }
 
-// Patch 4: Null-guard SaveManager.get_Instance and get_PrefsSave in Neutralize.MoveNext.
+// Patch 4: Null-guard SaveManager.get_Instance and get_PrefsSave in ALL card OnPlay MoveNext.
 // In headless mode, SaveManager.Instance may be null or PrefsSave may not be loaded.
 // We add: dup; brfalse popAndSkip after each potentially-null call,
 // and insert pop; br skipTarget as the cleanup path.
-try
+// This is done generically for every type with an <OnPlay> nested state machine.
+static void PatchSaveManagerNullGuard(MethodDefinition moveNext4, string typeName)
 {
-    var neutralize4 = module.Types.FirstOrDefault(t => t.Name == "Neutralize");
-    var onPlaySM4 = neutralize4?.NestedTypes.FirstOrDefault(t => t.Name.Contains("OnPlay"));
-    var moveNext4 = onPlaySM4?.Methods.FirstOrDefault(m => m.Name == "MoveNext");
+    // --- Find all relevant instructions BEFORE any modifications ---
+    Instruction? smCall = null;   // call SaveManager::get_Instance
+    Instruction? pfCall = null;   // callvirt SaveManager::get_PrefsSave
+    Instruction? bneUn = null;    // bne.un.s (FastMode != 1)
+    Instruction? stloc2 = null;   // stloc (stores adjusted delay)
 
-    if (moveNext4 != null && moveNext4.HasBody)
+    foreach (var instr in moveNext4.Body.Instructions)
     {
-        // --- Find all relevant instructions BEFORE any modifications ---
-        Instruction? smCall = null;   // call SaveManager::get_Instance
-        Instruction? pfCall = null;   // callvirt SaveManager::get_PrefsSave
-        Instruction? bneUn = null;    // bne.un.s (FastMode != 1)
-        Instruction? stloc2 = null;   // stloc.2 (stores adjusted delay)
-
-        foreach (var instr in moveNext4.Body.Instructions)
+        if (instr.OpCode == OpCodes.Call
+            && instr.Operand is MethodReference smRef
+            && smRef.DeclaringType.Name == "SaveManager"
+            && smRef.Name == "get_Instance")
         {
-            if (instr.OpCode == OpCodes.Call
-                && instr.Operand is MethodReference smRef
-                && smRef.DeclaringType.Name == "SaveManager"
-                && smRef.Name == "get_Instance")
-            {
-                smCall = instr;
-            }
-            else if (smCall != null && pfCall == null
-                && instr.OpCode == OpCodes.Callvirt
-                && instr.Operand is MethodReference pfRef
-                && pfRef.DeclaringType.Name == "SaveManager"
-                && pfRef.Name == "get_PrefsSave")
-            {
-                pfCall = instr;
-            }
-            else if (smCall != null && bneUn == null
-                && (instr.OpCode == OpCodes.Bne_Un_S || instr.OpCode == OpCodes.Bne_Un))
-            {
-                bneUn = instr;
-            }
-            else if (bneUn != null && stloc2 == null
-                && (instr.OpCode == OpCodes.Stloc_2
-                    || instr.OpCode == OpCodes.Stloc_S
-                    || instr.OpCode == OpCodes.Stloc))
-            {
-                stloc2 = instr; break;
-            }
+            smCall = instr;
         }
-
-        // Guard: skip if SaveManager null guard already injected (DLL already patched)
-        var smCallIdx = smCall != null ? moveNext4.Body.Instructions.IndexOf(smCall) : -1;
-        var alreadyPatched4 = smCall != null
-            && smCallIdx + 1 < moveNext4.Body.Instructions.Count
-            && moveNext4.Body.Instructions[smCallIdx + 1].OpCode == OpCodes.Dup;
-
-        if (alreadyPatched4)
+        else if (smCall != null && pfCall == null
+            && instr.OpCode == OpCodes.Callvirt
+            && instr.Operand is MethodReference pfRef
+            && pfRef.DeclaringType.Name == "SaveManager"
+            && pfRef.Name == "get_PrefsSave")
         {
-            Console.WriteLine("  Neutralize.MoveNext SaveManager guards already patched; skipping");
+            pfCall = instr;
         }
-        else if (smCall != null && bneUn != null)
+        else if (smCall != null && bneUn == null
+            && (instr.OpCode == OpCodes.Bne_Un_S || instr.OpCode == OpCodes.Bne_Un))
         {
-            var skipTarget4 = (Instruction)bneUn.Operand; // instr after FastMode block
-            var mnIL4 = moveNext4.Body.GetILProcessor();
-
-            // Build cleanup path: pop (one dangling stack value) then jump to skipTarget
-            var popNull4 = mnIL4.Create(OpCodes.Pop);
-            var brToSkip4 = mnIL4.Create(OpCodes.Br, skipTarget4);
-            mnIL4.InsertBefore(skipTarget4, brToSkip4);
-            mnIL4.InsertBefore(brToSkip4, popNull4);
-
-            // Non-null FastMode path: after stloc.2 we must jump OVER the cleanup
-            if (stloc2 != null)
-                mnIL4.InsertAfter(stloc2, mnIL4.Create(OpCodes.Br, skipTarget4));
-
-            // Upgrade bne.un.s → bne.un (branch distance may grow after insertions)
-            if (bneUn.OpCode == OpCodes.Bne_Un_S)
-                bneUn.OpCode = OpCodes.Bne_Un;
-
-            // Guard 1: null check for SaveManager.Instance
-            // After call get_Instance: dup; brfalse popNull4
-            mnIL4.InsertAfter(smCall, mnIL4.Create(OpCodes.Brfalse, popNull4));
-            mnIL4.InsertAfter(smCall, mnIL4.Create(OpCodes.Dup));
-
-            // Guard 2: null check for SaveManager.PrefsSave
-            // After callvirt get_PrefsSave: dup; brfalse popNull4
-            if (pfCall != null)
-            {
-                mnIL4.InsertAfter(pfCall, mnIL4.Create(OpCodes.Brfalse, popNull4));
-                mnIL4.InsertAfter(pfCall, mnIL4.Create(OpCodes.Dup));
-            }
-
-            patches++;
-            Console.WriteLine("  Patched Neutralize.MoveNext — SaveManager+PrefsSave null guards");
+            bneUn = instr;
         }
-        else
+        else if (bneUn != null && stloc2 == null
+            && (instr.OpCode == OpCodes.Stloc_0 || instr.OpCode == OpCodes.Stloc_1
+                || instr.OpCode == OpCodes.Stloc_2 || instr.OpCode == OpCodes.Stloc_3
+                || instr.OpCode == OpCodes.Stloc_S || instr.OpCode == OpCodes.Stloc))
         {
-            Console.WriteLine("  WARN: Could not find SaveManager.get_Instance or bne.un in Neutralize.MoveNext");
+            stloc2 = instr; break;
         }
     }
+
+    if (smCall == null || bneUn == null) return;  // no SaveManager pattern in this method
+
+    // Guard: skip if SaveManager null guard already injected (DLL already patched)
+    var smCallIdx = moveNext4.Body.Instructions.IndexOf(smCall);
+    var alreadyPatched4 = smCallIdx + 1 < moveNext4.Body.Instructions.Count
+        && moveNext4.Body.Instructions[smCallIdx + 1].OpCode == OpCodes.Dup;
+
+    if (alreadyPatched4)
+    {
+        Console.WriteLine($"  {typeName}.OnPlay.MoveNext SaveManager guards already patched; skipping");
+        return;
+    }
+
+    var skipTarget4 = (Instruction)bneUn.Operand; // instr after FastMode block
+    var mnIL4 = moveNext4.Body.GetILProcessor();
+
+    // Build cleanup path: pop (one dangling stack value) then jump to skipTarget
+    var popNull4 = mnIL4.Create(OpCodes.Pop);
+    var brToSkip4 = mnIL4.Create(OpCodes.Br, skipTarget4);
+    mnIL4.InsertBefore(skipTarget4, brToSkip4);
+    mnIL4.InsertBefore(brToSkip4, popNull4);
+
+    // Non-null FastMode path: after stloc we must jump OVER the cleanup
+    if (stloc2 != null)
+        mnIL4.InsertAfter(stloc2, mnIL4.Create(OpCodes.Br, skipTarget4));
+
+    // Upgrade bne.un.s → bne.un (branch distance may grow after insertions)
+    if (bneUn.OpCode == OpCodes.Bne_Un_S)
+        bneUn.OpCode = OpCodes.Bne_Un;
+
+    // Guard 1: null check for SaveManager.Instance
+    // After call get_Instance: dup; brfalse popNull4
+    mnIL4.InsertAfter(smCall, mnIL4.Create(OpCodes.Brfalse, popNull4));
+    mnIL4.InsertAfter(smCall, mnIL4.Create(OpCodes.Dup));
+
+    // Guard 2: null check for SaveManager.PrefsSave
+    // After callvirt get_PrefsSave: dup; brfalse popNull4
+    if (pfCall != null)
+    {
+        mnIL4.InsertAfter(pfCall, mnIL4.Create(OpCodes.Brfalse, popNull4));
+        mnIL4.InsertAfter(pfCall, mnIL4.Create(OpCodes.Dup));
+    }
+
+    Console.WriteLine($"  Patched {typeName}.OnPlay.MoveNext — SaveManager+PrefsSave null guards");
+}
+
+try
+{
+    int smPatches = 0;
+    foreach (var cardType in module.Types)
+    {
+        var onPlaySM4 = cardType.NestedTypes.FirstOrDefault(t => t.Name.Contains("OnPlay"));
+        if (onPlaySM4 == null) continue;
+        var moveNext4 = onPlaySM4.Methods.FirstOrDefault(m => m.Name == "MoveNext");
+        if (moveNext4 == null || !moveNext4.HasBody) continue;
+        PatchSaveManagerNullGuard(moveNext4, cardType.Name);
+        smPatches++;
+    }
+    if (smPatches > 0) patches += smPatches;
+    Console.WriteLine($"  SaveManager null-guard pass: checked {smPatches} card OnPlay methods");
 }
 catch (Exception ex4)
 {
