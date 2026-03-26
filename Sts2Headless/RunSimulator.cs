@@ -196,6 +196,7 @@ public class RunSimulator
     private static readonly System.Reflection.FieldInfo? _headlessTargetField =
         typeof(PlayCardAction).GetField("_headlessTarget",
             System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+    private static bool _headlessTargetFieldWarnedOnce;
     private readonly ManualResetEventSlim _turnStarted = new(false);
     private readonly ManualResetEventSlim _combatEnded = new(false);
     private static readonly LocLookup _loc = new();
@@ -420,8 +421,11 @@ public class RunSimulator
 
         var handCountBefore = hand.Count;
 
-        if (_headlessTargetField == null)
+        if (_headlessTargetField == null && !_headlessTargetFieldWarnedOnce)
+        {
+            _headlessTargetFieldWarnedOnce = true;
             Console.Error.WriteLine("[WARN] _headlessTargetField is NULL - IL patch not found");
+        }
 
         try
         {

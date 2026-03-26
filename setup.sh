@@ -246,41 +246,61 @@ try
             Console.WriteLine("  Made <Target>k__BackingField public");
 
             // 1. Add static field: PlayCardAction._headlessTarget (Creature?)
-            var headlessField = new FieldDefinition(
-                "_headlessTarget",
-                Mono.Cecil.FieldAttributes.Public | Mono.Cecil.FieldAttributes.Static,
-                creatureTypeRef);
-            pcaType.Fields.Add(headlessField);
+            //    Guard against re-patching an already-patched DLL.
+            var headlessField = pcaType.Fields.FirstOrDefault(f => f.Name == "_headlessTarget");
+            if (headlessField == null)
+            {
+                headlessField = new FieldDefinition(
+                    "_headlessTarget",
+                    Mono.Cecil.FieldAttributes.Public | Mono.Cecil.FieldAttributes.Static,
+                    creatureTypeRef);
+                pcaType.Fields.Add(headlessField);
+                Console.WriteLine("  Added PlayCardAction._headlessTarget");
+            }
+            else
+            {
+                Console.WriteLine("  PlayCardAction._headlessTarget already exists; skipping");
+            }
 
             // 2. Add instance method: CardPlay.FillNullTarget()  ← on CardPlay so it can access private fields
             //    if (this.<Target>k__BackingField != null) return;
             //    if (PlayCardAction._headlessTarget == null) return;
             //    this.<Target>k__BackingField = PlayCardAction._headlessTarget;
-            var fillMethod = new MethodDefinition(
-                "FillNullTarget",
-                Mono.Cecil.MethodAttributes.Public,    // instance method on CardPlay
-                module.TypeSystem.Void);
+            //    Guard against re-patching an already-patched DLL.
+            var fillMethod = cardPlayType.Methods.FirstOrDefault(m => m.Name == "FillNullTarget");
+            if (fillMethod == null)
+            {
+                fillMethod = new MethodDefinition(
+                    "FillNullTarget",
+                    Mono.Cecil.MethodAttributes.Public,    // instance method on CardPlay
+                    module.TypeSystem.Void);
 
-            var fillIL = fillMethod.Body.GetILProcessor();
-            var retInstr = fillIL.Create(OpCodes.Ret);
+                var fillIL = fillMethod.Body.GetILProcessor();
+                var retInstr = fillIL.Create(OpCodes.Ret);
 
-            // if (this.Target != null) return
-            fillIL.Emit(OpCodes.Ldarg_0);
-            fillIL.Emit(OpCodes.Ldfld, targetBacking);
-            fillIL.Emit(OpCodes.Brtrue, retInstr);
+                // if (this.Target != null) return
+                fillIL.Emit(OpCodes.Ldarg_0);
+                fillIL.Emit(OpCodes.Ldfld, targetBacking);
+                fillIL.Emit(OpCodes.Brtrue, retInstr);
 
-            // if (PlayCardAction._headlessTarget == null) return
-            fillIL.Emit(OpCodes.Ldsfld, headlessField);
-            fillIL.Emit(OpCodes.Brfalse, retInstr);
+                // if (PlayCardAction._headlessTarget == null) return
+                fillIL.Emit(OpCodes.Ldsfld, headlessField);
+                fillIL.Emit(OpCodes.Brfalse, retInstr);
 
-            // this.Target = PlayCardAction._headlessTarget
-            fillIL.Emit(OpCodes.Ldarg_0);
-            fillIL.Emit(OpCodes.Ldsfld, headlessField);
-            fillIL.Emit(OpCodes.Stfld, targetBacking);
+                // this.Target = PlayCardAction._headlessTarget
+                fillIL.Emit(OpCodes.Ldarg_0);
+                fillIL.Emit(OpCodes.Ldsfld, headlessField);
+                fillIL.Emit(OpCodes.Stfld, targetBacking);
 
-            fillIL.Append(retInstr);
+                fillIL.Append(retInstr);
 
-            cardPlayType.Methods.Add(fillMethod);  // Add to CardPlay (owns the private field)
+                cardPlayType.Methods.Add(fillMethod);  // Add to CardPlay (owns the private field)
+                Console.WriteLine("  Added CardPlay.FillNullTarget");
+            }
+            else
+            {
+                Console.WriteLine("  CardPlay.FillNullTarget already exists; skipping");
+            }
 
             // 3. Inject call to FillNullTarget at start of Neutralize.<OnPlay>d__5.MoveNext
             var onPlaySM = neutralizeType.NestedTypes.FirstOrDefault(t => t.Name.Contains("OnPlay"));
@@ -289,19 +309,32 @@ try
 
             if (moveNext != null && moveNext.HasBody && cardPlayField != null)
             {
-                var mnIL = moveNext.Body.GetILProcessor();
-                var first = moveNext.Body.Instructions[0];
-                var fillRef = module.ImportReference(fillMethod);
-                var cardPlayFieldRef = module.ImportReference(cardPlayField);
+                // Guard: skip if FillNullTarget is already called (DLL already patched)
+                var alreadyPatched = moveNext.Body.Instructions.Any(i =>
+                    i.OpCode == OpCodes.Callvirt &&
+                    i.Operand is MethodReference mr &&
+                    mr.Name == "FillNullTarget");
 
-                // Insert before first instruction: ldarg.0; ldfld cardPlay; callvirt FillNullTarget
-                // cardPlay is always non-null when OnPlay is called, so no null check needed
-                mnIL.InsertBefore(first, mnIL.Create(OpCodes.Ldarg_0));
-                mnIL.InsertBefore(first, mnIL.Create(OpCodes.Ldfld, cardPlayFieldRef));
-                mnIL.InsertBefore(first, mnIL.Create(OpCodes.Callvirt, fillRef));
+                if (alreadyPatched)
+                {
+                    Console.WriteLine("  Neutralize.OnPlay.MoveNext already patched; skipping");
+                }
+                else
+                {
+                    var mnIL = moveNext.Body.GetILProcessor();
+                    var first = moveNext.Body.Instructions[0];
+                    var fillRef = module.ImportReference(fillMethod);
+                    var cardPlayFieldRef = module.ImportReference(cardPlayField);
 
-                patches++;
-                Console.WriteLine("  Patched Neutralize.OnPlay.MoveNext — FillNullTarget injected");
+                    // Insert before first instruction: ldarg.0; ldfld cardPlay; callvirt FillNullTarget
+                    // cardPlay is always non-null when OnPlay is called, so no null check needed
+                    mnIL.InsertBefore(first, mnIL.Create(OpCodes.Ldarg_0));
+                    mnIL.InsertBefore(first, mnIL.Create(OpCodes.Ldfld, cardPlayFieldRef));
+                    mnIL.InsertBefore(first, mnIL.Create(OpCodes.Callvirt, fillRef));
+
+                    patches++;
+                    Console.WriteLine("  Patched Neutralize.OnPlay.MoveNext — FillNullTarget injected");
+                }
             }
             else
             {
@@ -372,7 +405,17 @@ try
             }
         }
 
-        if (smCall != null && bneUn != null)
+        // Guard: skip if SaveManager null guard already injected (DLL already patched)
+        var smCallIdx = smCall != null ? moveNext4.Body.Instructions.IndexOf(smCall) : -1;
+        var alreadyPatched4 = smCall != null
+            && smCallIdx + 1 < moveNext4.Body.Instructions.Count
+            && moveNext4.Body.Instructions[smCallIdx + 1].OpCode == OpCodes.Dup;
+
+        if (alreadyPatched4)
+        {
+            Console.WriteLine("  Neutralize.MoveNext SaveManager guards already patched; skipping");
+        }
+        else if (smCall != null && bneUn != null)
         {
             var skipTarget4 = (Instruction)bneUn.Operand; // instr after FastMode block
             var mnIL4 = moveNext4.Body.GetILProcessor();
